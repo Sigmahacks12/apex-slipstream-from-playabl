@@ -26,6 +26,17 @@ const POWERUP_META = {
   doubleScore: { label: "2x Score", short: "2X", color: "#ffe66d", duration: 10 },
   speedBoost: { label: "Boost", short: "BST", color: "#ff5f7d", duration: 8 },
 };
+const DEFAULT_KEY_BINDINGS = {
+  left: "ArrowLeft",
+  right: "ArrowRight",
+  pause: "Escape",
+};
+const KEY_BINDING_STORAGE = "apexSlipstream.keyBindings.v1";
+const CONTROL_ACTIONS = [
+  { id: "left", label: "Left" },
+  { id: "right", label: "Right" },
+  { id: "pause", label: "Pause" },
+];
 
 export function createGame({ mount, sdk, tweaks, assets }) {
   let cleanup = () => {};
@@ -47,7 +58,16 @@ export function createGame({ mount, sdk, tweaks, assets }) {
       const state = createRaceState();
       const tuning = createTuning(tweaks);
       const audio = createAudioController(sdk);
-      const controls = createControls(canvas, () => canvas.getBoundingClientRect());
+      const keyBindings = createKeyBindings();
+      const controls = createControls(canvas, () => canvas.getBoundingClientRect(), keyBindings.values, () => {
+        if (state.mode === "running") {
+          state.mode = "paused";
+          hud.showPause(state);
+        } else if (state.mode === "paused") {
+          state.mode = "running";
+          hud.hideOverlay();
+        }
+      });
 
       let disposed = false;
       let frameId = 0;
@@ -83,6 +103,22 @@ export function createGame({ mount, sdk, tweaks, assets }) {
         hud.hideOverlay();
         audio.unlock().then(() => audio.startEngine()).catch(() => {});
       });
+      hud.onResume(() => {
+        if (state.mode !== "paused") return;
+        state.mode = "running";
+        hud.hideOverlay();
+      });
+      hud.onPause(() => {
+        if (state.mode !== "running") return;
+        state.mode = "paused";
+        hud.showPause(state);
+      });
+      hud.onBindingsChange((nextBindings) => {
+        keyBindings.set(nextBindings);
+        controls.setBindings(keyBindings.values);
+        hud.setKeyBindings(keyBindings.values);
+      });
+      hud.setKeyBindings(keyBindings.values);
 
       function resize() {
         const rect = shell.getBoundingClientRect();
@@ -245,7 +281,50 @@ function coerceNumber(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function createControls(surface, getBounds) {
+function createKeyBindings() {
+  let values = readKeyBindings();
+
+  return {
+    get values() {
+      return { ...values };
+    },
+    set(nextBindings) {
+      values = normalizeKeyBindings(nextBindings);
+      try {
+        window.localStorage.setItem(KEY_BINDING_STORAGE, JSON.stringify(values));
+      } catch {
+        // Keybinds are still usable for this session if storage is blocked.
+      }
+    },
+  };
+}
+
+function readKeyBindings() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(KEY_BINDING_STORAGE) || "{}");
+    return normalizeKeyBindings(saved);
+  } catch {
+    return { ...DEFAULT_KEY_BINDINGS };
+  }
+}
+
+function normalizeKeyBindings(bindings) {
+  const normalized = { ...DEFAULT_KEY_BINDINGS };
+  for (const action of CONTROL_ACTIONS) {
+    if (typeof bindings?.[action.id] === "string" && bindings[action.id]) {
+      normalized[action.id] = bindings[action.id];
+    }
+  }
+
+  const used = new Set();
+  for (const action of CONTROL_ACTIONS) {
+    if (used.has(normalized[action.id])) normalized[action.id] = DEFAULT_KEY_BINDINGS[action.id];
+    used.add(normalized[action.id]);
+  }
+  return normalized;
+}
+
+function createControls(surface, getBounds, initialBindings, onPause) {
   const state = {
     active: false,
     pointerId: null,
@@ -253,6 +332,7 @@ function createControls(surface, getBounds) {
     steer: 0,
   };
   const keys = new Set();
+  let bindings = normalizeKeyBindings(initialBindings);
 
   function setPointer(event) {
     const rect = getBounds();
@@ -282,7 +362,13 @@ function createControls(surface, getBounds) {
   }
 
   function onKeyDown(event) {
-    if (["ArrowLeft", "KeyA", "ArrowRight", "KeyD"].includes(event.code)) {
+    if (!event.repeat && event.code === bindings.pause) {
+      onPause?.();
+      event.preventDefault();
+      return;
+    }
+
+    if ([bindings.left, bindings.right].includes(event.code)) {
       keys.add(event.code);
       event.preventDefault();
     }
@@ -301,10 +387,14 @@ function createControls(surface, getBounds) {
 
   return {
     sample() {
-      const left = keys.has("ArrowLeft") || keys.has("KeyA");
-      const right = keys.has("ArrowRight") || keys.has("KeyD");
+      const left = keys.has(bindings.left);
+      const right = keys.has(bindings.right);
       state.steer = (right ? 1 : 0) - (left ? 1 : 0);
       return { active: state.active, pointerX: state.pointerX, steer: state.steer };
+    },
+    setBindings(nextBindings) {
+      bindings = normalizeKeyBindings(nextBindings);
+      keys.clear();
     },
     reset(x) {
       state.pointerX = x;
@@ -397,6 +487,8 @@ function resetRace(state, viewport, options = {}) {
 }
 
 function updateRace(state, dt, input, tuning, viewport, feedback) {
+  if (state.mode === "paused") return false;
+
   if (state.mode !== "running") {
     updateParticles(state, dt);
     return false;
@@ -1146,6 +1238,19 @@ function createHud(shell) {
   hud.innerHTML = `
     <div class="hud-badge hud-distance"><span>Dist</span><strong>0 m</strong></div>
     <div class="hud-badge hud-best"><span>Best</span><strong>0 m</strong></div>
+    <div class="hud-tools">
+      <button class="hud-icon-button pause-button" type="button" aria-label="Pause">II</button>
+      <button class="hud-icon-button controls-button" type="button" aria-label="Controls">⌨</button>
+    </div>
+    <div class="controls-panel" hidden>
+      <div class="controls-panel-title">Controls</div>
+      ${CONTROL_ACTIONS.map((action) => `
+        <button class="keybind-button" type="button" data-action="${action.id}">
+          <span>${action.label}</span><strong></strong>
+        </button>
+      `).join("")}
+      <button class="reset-keybinds" type="button">Reset keys</button>
+    </div>
     <div class="powerup-strip" aria-label="Active powerups"></div>
     <div class="bonus-toast" hidden></div>
     <div class="draft-meter" aria-label="Draft boost"><span></span></div>
@@ -1167,22 +1272,102 @@ function createHud(shell) {
   const meterFill = hud.querySelector(".draft-meter span");
   const powerupStrip = hud.querySelector(".powerup-strip");
   const bonusToast = hud.querySelector(".bonus-toast");
+  const pauseButton = hud.querySelector(".pause-button");
+  const controlsButton = hud.querySelector(".controls-button");
+  const controlsPanel = hud.querySelector(".controls-panel");
+  const keybindButtons = [...hud.querySelectorAll(".keybind-button")];
+  const resetKeybinds = hud.querySelector(".reset-keybinds");
   const hint = hud.querySelector(".race-hint");
   const title = overlay.querySelector(".overlay-title");
   const copy = overlay.querySelector(".overlay-copy");
   const startHandlers = new Set();
+  const pauseHandlers = new Set();
+  const resumeHandlers = new Set();
+  const bindingHandlers = new Set();
+  let bindings = { ...DEFAULT_KEY_BINDINGS };
+  let remappingAction = "";
 
   function startClick() {
+    if (overlay.dataset.mode === "paused") {
+      for (const handler of resumeHandlers) handler();
+      return;
+    }
     for (const handler of startHandlers) handler();
   }
 
+  function pauseClick() {
+    for (const handler of pauseHandlers) handler();
+  }
+
+  function controlsClick() {
+    controlsPanel.hidden = !controlsPanel.hidden;
+  }
+
+  function keybindClick(event) {
+    const action = event.currentTarget.dataset.action;
+    remappingAction = action;
+    refreshKeybinds();
+  }
+
+  function resetClick() {
+    bindings = { ...DEFAULT_KEY_BINDINGS };
+    remappingAction = "";
+    notifyBindingsChanged();
+  }
+
+  function remapKeyDown(event) {
+    if (!remappingAction) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const previousCode = bindings[remappingAction];
+    const duplicateAction = CONTROL_ACTIONS.find((action) => action.id !== remappingAction && bindings[action.id] === event.code);
+    bindings = { ...bindings, [remappingAction]: event.code };
+    if (duplicateAction) bindings[duplicateAction.id] = previousCode;
+    remappingAction = "";
+    notifyBindingsChanged();
+  }
+
+  function notifyBindingsChanged() {
+    bindings = normalizeKeyBindings(bindings);
+    refreshKeybinds();
+    for (const handler of bindingHandlers) handler(bindings);
+  }
+
+  function refreshKeybinds() {
+    for (const button of keybindButtons) {
+      const action = button.dataset.action;
+      const value = button.querySelector("strong");
+      button.classList.toggle("is-remapping", action === remappingAction);
+      value.textContent = action === remappingAction ? "Press key" : formatKey(bindings[action]);
+    }
+  }
+
   overlay.addEventListener("click", startClick);
+  pauseButton.addEventListener("click", pauseClick);
+  controlsButton.addEventListener("click", controlsClick);
+  resetKeybinds.addEventListener("click", resetClick);
+  for (const button of keybindButtons) button.addEventListener("click", keybindClick);
+  window.addEventListener("keydown", remapKeyDown, true);
 
   return {
     onStart(handler) {
       startHandlers.add(handler);
     },
+    onPause(handler) {
+      pauseHandlers.add(handler);
+    },
+    onResume(handler) {
+      resumeHandlers.add(handler);
+    },
+    onBindingsChange(handler) {
+      bindingHandlers.add(handler);
+    },
+    setKeyBindings(nextBindings) {
+      bindings = normalizeKeyBindings(nextBindings);
+      refreshKeybinds();
+    },
     setReady(best) {
+      overlay.dataset.mode = "start";
       title.textContent = "Apex Slipstream";
       copy.textContent = best > 0 ? `Best ${best} m · tap to race` : "Tap to race";
       bestValue.textContent = `${best} m`;
@@ -1192,10 +1377,18 @@ function createHud(shell) {
       copy.textContent = message;
     },
     hideOverlay() {
+      overlay.dataset.mode = "";
       overlay.hidden = true;
+    },
+    showPause(state) {
+      overlay.hidden = false;
+      overlay.dataset.mode = "paused";
+      title.textContent = "Paused";
+      copy.textContent = `${state.score} m · tap to resume`;
     },
     showResult(state) {
       overlay.hidden = false;
+      overlay.dataset.mode = "start";
       title.textContent = state.crashReason === "Wall" ? "Ran out of track" : "Wheel-to-wheel hit";
       copy.textContent = `${state.score} m · best ${state.best} m · tap retry`;
     },
@@ -1218,9 +1411,32 @@ function createHud(shell) {
     },
     dispose() {
       overlay.removeEventListener("click", startClick);
+      pauseButton.removeEventListener("click", pauseClick);
+      controlsButton.removeEventListener("click", controlsClick);
+      resetKeybinds.removeEventListener("click", resetClick);
+      for (const button of keybindButtons) button.removeEventListener("click", keybindClick);
+      window.removeEventListener("keydown", remapKeyDown, true);
       startHandlers.clear();
+      pauseHandlers.clear();
+      resumeHandlers.clear();
+      bindingHandlers.clear();
     },
   };
+}
+
+function formatKey(code) {
+  const labels = {
+    ArrowLeft: "←",
+    ArrowRight: "→",
+    ArrowUp: "↑",
+    ArrowDown: "↓",
+    Space: "Space",
+    Escape: "Esc",
+  };
+  if (labels[code]) return labels[code];
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  return code.replace(/^Numpad/, "Num ");
 }
 
 function createAudioController(sdk) {
