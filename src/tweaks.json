@@ -54,6 +54,17 @@
     "group": "gameplay",
     "index": 5
   },
+  "powerupFrequency": {
+    "type": "number",
+    "value": 1,
+    "min": 0.3,
+    "max": 2,
+    "step": 0.1,
+    "name": "Powerup Frequency",
+    "description": "How often shield, double score, and speed boost pickups appear.",
+    "group": "gameplay",
+    "index": 6
+  },
   "effectsIntensity": {
     "type": "number",
     "value": 1,
@@ -63,6 +74,6 @@
     "name": "Effects Intensity",
     "description": "Strength of sparks, screen shake, and speed streaks.",
     "group": "visual",
-    "index": 6
+    "index": 7
   }
 }

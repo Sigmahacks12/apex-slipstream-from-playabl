@@ -14,11 +14,18 @@ const DEFAULT_TWEAKS = {
   trafficIntensity: 1,
   steeringGrip: 9.5,
   trafficSpeed: 0.52,
+  powerupFrequency: 1,
   effectsIntensity: 1,
 };
 
 const LANES = [-0.72, 0, 0.72];
 const RIVAL_VARIANTS = ["red_car", "yellow_car", "green_car", "white_car"];
+const POWERUP_TYPES = ["invincible", "doubleScore", "speedBoost"];
+const POWERUP_META = {
+  invincible: { label: "Shield", short: "SHD", color: "#6ef7ff", duration: 10 },
+  doubleScore: { label: "2x Score", short: "2X", color: "#ffe66d", duration: 10 },
+  speedBoost: { label: "Boost", short: "BST", color: "#ff5f7d", duration: 8 },
+};
 
 export function createGame({ mount, sdk, tweaks, assets }) {
   let cleanup = () => {};
@@ -322,6 +329,7 @@ function createRaceState() {
     mode: "idle",
     distance: 0,
     score: 0,
+    scoreFloat: 0,
     best: 0,
     speed: 0,
     boost: 0,
@@ -330,8 +338,17 @@ function createRaceState() {
     crashReason: "",
     showHintFor: 4,
     nextSpawn: 520,
+    nextPowerup: 900,
     nextGate: 720,
     milestone: 0,
+    closeMissStreak: 0,
+    bonusFlash: 0,
+    bonusText: "",
+    activePowerups: {
+      invincible: 0,
+      doubleScore: 0,
+      speedBoost: 0,
+    },
     player: {
       x: 0,
       y: 0,
@@ -340,6 +357,7 @@ function createRaceState() {
       scrape: 0,
     },
     rivals: [],
+    powerups: [],
     particles: [],
     gates: [],
   };
@@ -349,6 +367,7 @@ function resetRace(state, viewport, options = {}) {
   state.mode = "idle";
   state.distance = 0;
   state.score = 0;
+  state.scoreFloat = 0;
   state.speed = 0;
   state.boost = 0;
   state.draftPulse = 0;
@@ -356,14 +375,22 @@ function resetRace(state, viewport, options = {}) {
   state.crashReason = "";
   state.showHintFor = 4;
   state.nextSpawn = 520;
+  state.nextPowerup = 900;
   state.nextGate = 720;
   state.milestone = 0;
+  state.closeMissStreak = 0;
+  state.bonusFlash = 0;
+  state.bonusText = "";
+  state.activePowerups.invincible = 0;
+  state.activePowerups.doubleScore = 0;
+  state.activePowerups.speedBoost = 0;
   state.player.y = viewport.height * 0.78;
   state.player.x = getTrackCenter(0, viewport);
   state.player.targetX = state.player.x;
   state.player.angle = 0;
   state.player.scrape = 0;
   state.rivals = [];
+  state.powerups = [];
   state.particles = [];
   state.gates = [];
   if (!options.keepBest) state.best = Math.max(0, state.best);
@@ -378,23 +405,47 @@ function updateRace(state, dt, input, tuning, viewport, feedback) {
   state.showHintFor = Math.max(0, state.showHintFor - dt);
   const baseSpeed = tuning.baseSpeed;
   const ramp = Math.min(235, state.distance * tuning.speedRamp);
-  state.speed = baseSpeed + ramp + state.boost * 135;
+  const powerBoost = state.activePowerups.speedBoost > 0 ? 155 : 0;
+  state.speed = baseSpeed + ramp + state.boost * 135 + powerBoost;
   state.distance += state.speed * dt;
-  state.score = Math.max(state.score, Math.floor(state.distance / 8 + state.boost * 40));
+  const scoreMultiplier = state.activePowerups.doubleScore > 0 ? 2 : 1;
+  state.scoreFloat += (state.speed * dt / 8) * scoreMultiplier;
+  state.score = Math.max(state.score, Math.floor(state.scoreFloat + state.boost * 40 * scoreMultiplier));
 
   updatePlayer(state, input, tuning, viewport, dt);
+  updatePowerupTimers(state, dt);
   spawnTraffic(state, viewport, tuning);
+  spawnPowerups(state, viewport, tuning);
   updateRivals(state, viewport, dt, tuning);
+  updatePowerups(state, viewport);
   updateGates(state);
+  updateCloseMisses(state, viewport);
   updateDraft(state, viewport, dt, feedback);
   updateParticles(state, dt);
   updateRoadPressure(state, viewport, dt);
 
   if (checkWallCrash(state, viewport)) {
+    if (state.activePowerups.invincible > 0) {
+      const road = roadEdgesAt(state.distance, viewport);
+      state.player.x = clamp(state.player.x, road.left + 28, road.right - 28);
+      state.player.targetX = state.player.x;
+      state.shake = Math.max(state.shake, 6);
+      addBurst(state, state.player.x, state.player.y + 20, "cyan", 8);
+      return false;
+    }
     crash(state, "Wall", feedback);
     return true;
   }
-  if (checkRivalCrash(state, viewport)) {
+  const hitRival = checkRivalCrash(state, viewport);
+  if (hitRival) {
+    if (state.activePowerups.invincible > 0) {
+      hitRival.destroyed = true;
+      state.shake = Math.max(state.shake, 7);
+      awardBonus(state, 120, "Shield smash");
+      addBurst(state, state.player.x, state.player.y - 26, "cyan", 18);
+      state.rivals = state.rivals.filter((rival) => !rival.destroyed);
+      return false;
+    }
     crash(state, "Traffic", feedback);
     return true;
   }
@@ -452,10 +503,24 @@ function spawnTraffic(state, viewport, tuning) {
         variant: RIVAL_VARIANTS[Math.floor(Math.random() * RIVAL_VARIANTS.length)],
         tilt: 0,
         drafted: false,
+        closeMissed: false,
       });
     }
     const gap = clamp(650 - state.distance * 0.026, 270, 650) / clamp(tuning.trafficIntensity, 0.55, 1.8);
     state.nextSpawn += gap + Math.random() * 120;
+  }
+}
+
+function spawnPowerups(state, viewport, tuning) {
+  const frequency = clamp(tuning.powerupFrequency, 0.3, 2);
+  while (state.nextPowerup < state.distance + viewport.height * 1.45) {
+    state.powerups.push({
+      station: state.nextPowerup + Math.random() * 120,
+      lane: LANES[Math.floor(Math.random() * LANES.length)],
+      type: POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)],
+      phase: Math.random() * Math.PI * 2,
+    });
+    state.nextPowerup += (1150 + Math.random() * 680) / frequency;
   }
 }
 
@@ -472,6 +537,70 @@ function updateRivals(state, viewport, dt, tuning) {
     rival.tilt = clamp((rival.lane - previousLane) * 24, -0.13, 0.13);
   }
   state.rivals = state.rivals.filter((rival) => screenYForStation(state, rival.station) < viewport.height + 180);
+}
+
+function updatePowerupTimers(state, dt) {
+  for (const key of Object.keys(state.activePowerups)) {
+    state.activePowerups[key] = Math.max(0, state.activePowerups[key] - dt);
+  }
+  state.bonusFlash = Math.max(0, state.bonusFlash - dt);
+}
+
+function updatePowerups(state, viewport) {
+  const carH = getPlayerHeight(viewport);
+  const pickupRadius = Math.max(34, carH * 0.34);
+  for (const powerup of state.powerups) {
+    const y = screenYForStation(state, powerup.station);
+    const x = laneX(powerup.station, powerup.lane, viewport);
+    const touching = Math.abs(y - state.player.y) < pickupRadius && Math.abs(x - state.player.x) < pickupRadius;
+    if (!touching) continue;
+    const meta = POWERUP_META[powerup.type];
+    state.activePowerups[powerup.type] = meta.duration;
+    powerup.collected = true;
+    awardBonus(state, 90, meta.label);
+    addBurst(state, x, y, powerup.type === "doubleScore" ? "gold" : "cyan", 16);
+  }
+  state.powerups = state.powerups.filter((powerup) => {
+    if (powerup.collected) return false;
+    return screenYForStation(state, powerup.station) < viewport.height + 140;
+  });
+}
+
+function updateCloseMisses(state, viewport) {
+  const playerH = getPlayerHeight(viewport);
+  const playerW = playerH * 0.42;
+  const rivalH = playerH * 0.78;
+  const rivalW = rivalH * 0.5;
+  const collisionGap = (playerW + rivalW) * 0.44;
+  const nearGap = collisionGap + Math.min(62, getRoadHalfWidth(viewport) * 0.28);
+
+  for (const rival of state.rivals) {
+    if (rival.closeMissed) continue;
+    const y = screenYForStation(state, rival.station);
+    if (y < state.player.y + rivalH * 0.22) continue;
+    if (y > state.player.y + rivalH * 0.62) {
+      rival.closeMissed = true;
+      continue;
+    }
+    const x = laneX(rival.station, rival.lane, viewport);
+    const gap = Math.abs(x - state.player.x);
+    if (gap <= collisionGap || gap > nearGap) continue;
+    rival.closeMissed = true;
+    state.closeMissStreak += 1;
+    const precision = 1 - (gap - collisionGap) / Math.max(1, nearGap - collisionGap);
+    const bonus = Math.round((70 + precision * 90 + Math.min(5, state.closeMissStreak) * 18) / 10) * 10;
+    awardBonus(state, bonus, "Close miss");
+    addBurst(state, state.player.x + Math.sign(state.player.x - x) * 28, state.player.y - 18, "gold", 10);
+  }
+}
+
+function awardBonus(state, amount, label) {
+  const multiplier = state.activePowerups.doubleScore > 0 ? 2 : 1;
+  const total = Math.round(amount * multiplier);
+  state.scoreFloat += total;
+  state.score = Math.max(state.score, Math.floor(state.scoreFloat));
+  state.bonusFlash = 1.25;
+  state.bonusText = `+${total} ${label}`;
 }
 
 function updateGates(state) {
@@ -536,9 +665,9 @@ function checkRivalCrash(state, viewport) {
     const y = screenYForStation(state, rival.station);
     if (Math.abs(y - state.player.y) > (playerH + rivalH) * 0.28) continue;
     const x = laneX(rival.station, rival.lane, viewport);
-    if (Math.abs(x - state.player.x) < (playerW + rivalW) * 0.44) return true;
+    if (Math.abs(x - state.player.x) < (playerW + rivalW) * 0.44) return rival;
   }
-  return false;
+  return null;
 }
 
 function crash(state, reason, feedback) {
@@ -625,6 +754,7 @@ function renderRace(ctx, state, gameAssets, viewport, time, tuning) {
   drawAtmosphere(ctx, state, viewport, time, tuning);
   drawSpeedStreaks(ctx, state, viewport, time, tuning);
   drawGates(ctx, state, viewport, time);
+  drawPowerups(ctx, state, viewport, time);
   drawRivalWake(ctx, state, viewport, tuning);
   drawSlipstreams(ctx, state, viewport);
   drawRivals(ctx, state, gameAssets, viewport);
@@ -646,7 +776,8 @@ function drawBackdrop(ctx, image, viewport, distance) {
 }
 
 function drawSpeedStreaks(ctx, state, viewport, time, tuning) {
-  const alpha = Math.min(0.28, (state.speed / 740) * 0.22) * tuning.effectsIntensity;
+  const boostLift = state.activePowerups.speedBoost > 0 ? 0.08 : 0;
+  const alpha = (Math.min(0.28, (state.speed / 740) * 0.22) + boostLift) * tuning.effectsIntensity;
   ctx.lineCap = "round";
   for (let index = 0; index < 24; index += 1) {
     const seed = index * 97;
@@ -853,6 +984,39 @@ function drawSlipstreams(ctx, state, viewport) {
   }
 }
 
+function drawPowerups(ctx, state, viewport, time) {
+  for (const powerup of state.powerups) {
+    const y = screenYForStation(state, powerup.station);
+    if (y < -80 || y > viewport.height + 120) continue;
+    const x = laneX(powerup.station, powerup.lane, viewport);
+    const meta = POWERUP_META[powerup.type];
+    const bob = Math.sin(time * 5 + powerup.phase) * 4;
+    const radius = Math.max(18, Math.min(28, viewport.width * 0.045));
+    ctx.save();
+    ctx.translate(x, y + bob);
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = `${meta.color}22`;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 1.55, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = meta.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, time * 2.4, time * 2.4 + Math.PI * 1.55);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(4, 15, 24, 0.86)";
+    ctx.beginPath();
+    ctx.arc(0, 0, radius * 0.72, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = meta.color;
+    ctx.font = `800 ${Math.max(10, radius * 0.48)}px Inter, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(meta.short, 0, 1);
+    ctx.restore();
+  }
+}
+
 function drawRivalWake(ctx, state, viewport, tuning) {
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
@@ -903,6 +1067,23 @@ function drawPlayer(ctx, state, gameAssets, viewport, time) {
     drawFrame(ctx, gameAssets.images.effects, frame, state.player.x, state.player.y + carH * 0.5, carH * (0.85 + state.boost * 0.5), Math.PI);
   }
 
+  if (state.activePowerups.speedBoost > 0) {
+    const frame = gameAssets.effectFrames.boost_3 || gameAssets.effectFrames.boost_2;
+    drawFrame(ctx, gameAssets.images.effects, frame, state.player.x, state.player.y + carH * 0.58, carH * 1.35, Math.PI);
+  }
+
+  if (state.activePowerups.invincible > 0) {
+    const pulse = 0.55 + Math.sin(time * 9) * 0.12;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.strokeStyle = `rgba(110, 247, 255, ${pulse})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.ellipse(state.player.x, state.player.y, carW * 0.64, carH * 0.58, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   ctx.save();
   ctx.translate(state.player.x, state.player.y);
   ctx.rotate(state.player.angle + Math.sin(time * 18) * state.player.scrape * 0.025);
@@ -915,7 +1096,11 @@ function drawParticles(ctx, state, tuning) {
   ctx.globalCompositeOperation = "lighter";
   for (const particle of state.particles) {
     const alpha = Math.max(0, particle.life / particle.maxLife) * tuning.effectsIntensity;
-    ctx.fillStyle = particle.color === "cyan" ? `rgba(86, 245, 255, ${alpha})` : `rgba(255, 125, 60, ${alpha})`;
+    ctx.fillStyle = particle.color === "cyan"
+      ? `rgba(86, 245, 255, ${alpha})`
+      : particle.color === "gold"
+        ? `rgba(255, 230, 109, ${alpha})`
+        : `rgba(255, 125, 60, ${alpha})`;
     ctx.beginPath();
     ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
     ctx.fill();
@@ -961,6 +1146,8 @@ function createHud(shell) {
   hud.innerHTML = `
     <div class="hud-badge hud-distance"><span>Dist</span><strong>0 m</strong></div>
     <div class="hud-badge hud-best"><span>Best</span><strong>0 m</strong></div>
+    <div class="powerup-strip" aria-label="Active powerups"></div>
+    <div class="bonus-toast" hidden></div>
     <div class="draft-meter" aria-label="Draft boost"><span></span></div>
     <div class="race-hint" hidden>Drag to hold the racing line</div>
   `;
@@ -978,6 +1165,8 @@ function createHud(shell) {
   const distanceValue = hud.querySelector(".hud-distance strong");
   const bestValue = hud.querySelector(".hud-best strong");
   const meterFill = hud.querySelector(".draft-meter span");
+  const powerupStrip = hud.querySelector(".powerup-strip");
+  const bonusToast = hud.querySelector(".bonus-toast");
   const hint = hud.querySelector(".race-hint");
   const title = overlay.querySelector(".overlay-title");
   const copy = overlay.querySelector(".overlay-copy");
@@ -1014,6 +1203,17 @@ function createHud(shell) {
       distanceValue.textContent = `${state.score} m`;
       bestValue.textContent = `${Math.max(state.best, state.score)} m`;
       meterFill.style.transform = `scaleY(${Math.max(0.04, state.boost)})`;
+      const active = Object.entries(state.activePowerups)
+        .filter(([, seconds]) => seconds > 0)
+        .map(([type, seconds]) => {
+          const meta = POWERUP_META[type];
+          return `<span style="--powerup-color: ${meta.color}"><b>${meta.label}</b>${Math.ceil(seconds)}s</span>`;
+        });
+      powerupStrip.hidden = active.length === 0;
+      powerupStrip.innerHTML = active.join("");
+      bonusToast.hidden = state.bonusFlash <= 0;
+      bonusToast.textContent = state.bonusText;
+      bonusToast.style.opacity = String(clamp(state.bonusFlash, 0, 1));
       hint.hidden = !(state.mode === "running" && state.showHintFor > 0);
     },
     dispose() {
