@@ -1,0 +1,68 @@
+{
+  "baseSpeed": {
+    "type": "number",
+    "value": 380,
+    "min": 260,
+    "max": 520,
+    "step": 10,
+    "name": "Base Speed",
+    "description": "Starting race speed in track units per second.",
+    "group": "gameplay",
+    "index": 1
+  },
+  "speedRamp": {
+    "type": "number",
+    "value": 0.017,
+    "min": 0.005,
+    "max": 0.04,
+    "step": 0.001,
+    "name": "Speed Ramp",
+    "description": "How quickly the race pace escalates with distance.",
+    "group": "gameplay",
+    "index": 2
+  },
+  "trafficIntensity": {
+    "type": "number",
+    "value": 1,
+    "min": 0.5,
+    "max": 1.8,
+    "step": 0.1,
+    "name": "Traffic Intensity",
+    "description": "Rival car density and double-car pattern frequency.",
+    "group": "gameplay",
+    "index": 3
+  },
+  "steeringGrip": {
+    "type": "number",
+    "value": 9.5,
+    "min": 5,
+    "max": 15,
+    "step": 0.5,
+    "name": "Steering Grip",
+    "description": "How quickly the player car catches up to drag input.",
+    "group": "controls",
+    "index": 4
+  },
+  "trafficSpeed": {
+    "type": "number",
+    "value": 0.52,
+    "min": 0.35,
+    "max": 0.8,
+    "step": 0.01,
+    "name": "Traffic Speed",
+    "description": "How fast rival cars move in the same direction as the player.",
+    "group": "gameplay",
+    "index": 5
+  },
+  "effectsIntensity": {
+    "type": "number",
+    "value": 1,
+    "min": 0,
+    "max": 1.5,
+    "step": 0.1,
+    "name": "Effects Intensity",
+    "description": "Strength of sparks, screen shake, and speed streaks.",
+    "group": "visual",
+    "index": 6
+  }
+}

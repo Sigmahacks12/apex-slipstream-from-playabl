@@ -1,0 +1,9 @@
+{
+  "ASPHALT_TEXTURE": "/generated-assets/asphalt_texture.webp",
+  "PLAYER_CAR": "/generated-assets/player_car-transparent.webp",
+  "GRANDSTAND_BACKDROP": "/generated-assets/grandstand_backdrop.webp",
+  "RACING_EFFECTS": "/generated-assets/racing_effects-transparent.webp",
+  "RACING_EFFECTS_FRAMES": "/generated-assets/racing_effects-transparent.frames.json",
+  "RIVAL_CARS_FRAMES": "/generated-assets/rival_cars-transparent.frames.json",
+  "RIVAL_CARS": "/generated-assets/rival_cars-transparent.webp"
+}
