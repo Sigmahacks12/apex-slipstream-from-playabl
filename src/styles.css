@@ -179,6 +179,11 @@ button,
   transform: translateY(1px);
 }
 
+.hud-icon-button.is-muted {
+  border-color: rgba(255, 95, 125, 0.72);
+  color: #ff8ba0;
+}
+
 .controls-panel {
   position: absolute;
   top: calc(max(0.7rem, env(safe-area-inset-top)) + 3.1rem);
@@ -201,6 +206,30 @@ button,
   font-size: 1rem;
   font-weight: 850;
   text-transform: uppercase;
+}
+
+.difficulty-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.34rem;
+}
+
+.difficulty-button {
+  min-height: 2.1rem;
+  border: 1px solid rgba(135, 215, 232, 0.28);
+  border-radius: 0.45rem;
+  background: rgba(255, 255, 255, 0.055);
+  color: #eefbff;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 820;
+}
+
+.difficulty-button.is-selected {
+  border-color: rgba(255, 230, 109, 0.78);
+  background: rgba(255, 230, 109, 0.13);
+  color: #ffe66d;
+  box-shadow: 0 0 18px rgba(255, 230, 109, 0.14);
 }
 
 .keybind-button,

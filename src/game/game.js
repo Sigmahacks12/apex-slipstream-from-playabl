@@ -26,12 +26,20 @@ const POWERUP_META = {
   doubleScore: { label: "2x Score", short: "2X", color: "#ffe66d", duration: 10 },
   speedBoost: { label: "Boost", short: "BST", color: "#ff5f7d", duration: 8 },
 };
+const DIFFICULTIES = {
+  rookie: { label: "Rookie", speed: 0.9, traffic: 0.78, score: 0.9 },
+  pro: { label: "Pro", speed: 1, traffic: 1, score: 1 },
+  apex: { label: "Apex", speed: 1.12, traffic: 1.22, score: 1.2 },
+};
+const DEFAULT_DIFFICULTY = "pro";
 const DEFAULT_KEY_BINDINGS = {
   left: "ArrowLeft",
   right: "ArrowRight",
   pause: "Escape",
 };
 const KEY_BINDING_STORAGE = "apexSlipstream.keyBindings.v1";
+const DIFFICULTY_STORAGE = "apexSlipstream.difficulty.v1";
+const MUTE_STORAGE = "apexSlipstream.muted.v1";
 const CONTROL_ACTIONS = [
   { id: "left", label: "Left" },
   { id: "right", label: "Right" },
@@ -59,6 +67,8 @@ export function createGame({ mount, sdk, tweaks, assets }) {
       const tuning = createTuning(tweaks);
       const audio = createAudioController(sdk);
       const keyBindings = createKeyBindings();
+      state.difficulty = readDifficulty();
+      audio.setMuted(readMuted());
       const controls = createControls(canvas, () => canvas.getBoundingClientRect(), keyBindings.values, () => {
         if (state.mode === "running") {
           state.mode = "paused";
@@ -118,7 +128,19 @@ export function createGame({ mount, sdk, tweaks, assets }) {
         controls.setBindings(keyBindings.values);
         hud.setKeyBindings(keyBindings.values);
       });
+      hud.onDifficultyChange((difficulty) => {
+        state.difficulty = normalizeDifficulty(difficulty);
+        saveDifficulty(state.difficulty);
+        hud.setDifficulty(state.difficulty);
+      });
+      hud.onMuteChange((muted) => {
+        audio.setMuted(muted);
+        saveMuted(audio.isMuted());
+        hud.setMuted(audio.isMuted());
+      });
       hud.setKeyBindings(keyBindings.values);
+      hud.setDifficulty(state.difficulty);
+      hud.setMuted(audio.isMuted());
 
       function resize() {
         const rect = shell.getBoundingClientRect();
@@ -324,6 +346,42 @@ function normalizeKeyBindings(bindings) {
   return normalized;
 }
 
+function readDifficulty() {
+  try {
+    return normalizeDifficulty(window.localStorage.getItem(DIFFICULTY_STORAGE));
+  } catch {
+    return DEFAULT_DIFFICULTY;
+  }
+}
+
+function saveDifficulty(difficulty) {
+  try {
+    window.localStorage.setItem(DIFFICULTY_STORAGE, normalizeDifficulty(difficulty));
+  } catch {
+    // Difficulty can fall back to defaults when storage is unavailable.
+  }
+}
+
+function normalizeDifficulty(difficulty) {
+  return DIFFICULTIES[difficulty] ? difficulty : DEFAULT_DIFFICULTY;
+}
+
+function readMuted() {
+  try {
+    return window.localStorage.getItem(MUTE_STORAGE) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveMuted(muted) {
+  try {
+    window.localStorage.setItem(MUTE_STORAGE, muted ? "true" : "false");
+  } catch {
+    // Audio still works for this session if storage is blocked.
+  }
+}
+
 function createControls(surface, getBounds, initialBindings, onPause) {
   const state = {
     active: false,
@@ -422,6 +480,7 @@ function createRaceState() {
     scoreFloat: 0,
     best: 0,
     speed: 0,
+    difficulty: DEFAULT_DIFFICULTY,
     boost: 0,
     draftPulse: 0,
     shake: 0,
@@ -434,6 +493,13 @@ function createRaceState() {
     closeMissStreak: 0,
     bonusFlash: 0,
     bonusText: "",
+    stats: {
+      runTime: 0,
+      closeMisses: 0,
+      pickups: 0,
+      shieldSmashes: 0,
+      topSpeed: 0,
+    },
     activePowerups: {
       invincible: 0,
       doubleScore: 0,
@@ -471,6 +537,11 @@ function resetRace(state, viewport, options = {}) {
   state.closeMissStreak = 0;
   state.bonusFlash = 0;
   state.bonusText = "";
+  state.stats.runTime = 0;
+  state.stats.closeMisses = 0;
+  state.stats.pickups = 0;
+  state.stats.shieldSmashes = 0;
+  state.stats.topSpeed = 0;
   state.activePowerups.invincible = 0;
   state.activePowerups.doubleScore = 0;
   state.activePowerups.speedBoost = 0;
@@ -495,12 +566,15 @@ function updateRace(state, dt, input, tuning, viewport, feedback) {
   }
 
   state.showHintFor = Math.max(0, state.showHintFor - dt);
-  const baseSpeed = tuning.baseSpeed;
-  const ramp = Math.min(235, state.distance * tuning.speedRamp);
+  const difficulty = DIFFICULTIES[state.difficulty] || DIFFICULTIES[DEFAULT_DIFFICULTY];
+  state.stats.runTime += dt;
+  const baseSpeed = tuning.baseSpeed * difficulty.speed;
+  const ramp = Math.min(265, state.distance * tuning.speedRamp * difficulty.speed);
   const powerBoost = state.activePowerups.speedBoost > 0 ? 155 : 0;
   state.speed = baseSpeed + ramp + state.boost * 135 + powerBoost;
+  state.stats.topSpeed = Math.max(state.stats.topSpeed, state.speed);
   state.distance += state.speed * dt;
-  const scoreMultiplier = state.activePowerups.doubleScore > 0 ? 2 : 1;
+  const scoreMultiplier = (state.activePowerups.doubleScore > 0 ? 2 : 1) * difficulty.score;
   state.scoreFloat += (state.speed * dt / 8) * scoreMultiplier;
   state.score = Math.max(state.score, Math.floor(state.scoreFloat + state.boost * 40 * scoreMultiplier));
 
@@ -533,6 +607,7 @@ function updateRace(state, dt, input, tuning, viewport, feedback) {
     if (state.activePowerups.invincible > 0) {
       hitRival.destroyed = true;
       state.shake = Math.max(state.shake, 7);
+      state.stats.shieldSmashes += 1;
       awardBonus(state, 120, "Shield smash");
       addBurst(state, state.player.x, state.player.y - 26, "cyan", 18);
       state.rivals = state.rivals.filter((rival) => !rival.destroyed);
@@ -579,8 +654,10 @@ function updatePlayer(state, input, tuning, viewport, dt) {
 
 function spawnTraffic(state, viewport, tuning) {
   while (state.nextSpawn < state.distance + viewport.height * 1.35) {
+    const difficulty = DIFFICULTIES[state.difficulty] || DIFFICULTIES[DEFAULT_DIFFICULTY];
     const progress = Math.min(1, state.distance / 9000);
-    const doubleChance = (0.16 + progress * 0.32) * tuning.trafficIntensity;
+    const trafficScale = tuning.trafficIntensity * difficulty.traffic;
+    const doubleChance = (0.16 + progress * 0.32) * trafficScale;
     const count = Math.random() < doubleChance ? 2 : 1;
     const lanes = shuffledLanes().slice(0, count);
     for (const lane of lanes) {
@@ -598,7 +675,7 @@ function spawnTraffic(state, viewport, tuning) {
         closeMissed: false,
       });
     }
-    const gap = clamp(650 - state.distance * 0.026, 270, 650) / clamp(tuning.trafficIntensity, 0.55, 1.8);
+    const gap = clamp(650 - state.distance * 0.026, 270, 650) / clamp(trafficScale, 0.55, 2.2);
     state.nextSpawn += gap + Math.random() * 120;
   }
 }
@@ -649,6 +726,7 @@ function updatePowerups(state, viewport) {
     const meta = POWERUP_META[powerup.type];
     state.activePowerups[powerup.type] = meta.duration;
     powerup.collected = true;
+    state.stats.pickups += 1;
     awardBonus(state, 90, meta.label);
     addBurst(state, x, y, powerup.type === "doubleScore" ? "gold" : "cyan", 16);
   }
@@ -679,6 +757,7 @@ function updateCloseMisses(state, viewport) {
     if (gap <= collisionGap || gap > nearGap) continue;
     rival.closeMissed = true;
     state.closeMissStreak += 1;
+    state.stats.closeMisses += 1;
     const precision = 1 - (gap - collisionGap) / Math.max(1, nearGap - collisionGap);
     const bonus = Math.round((70 + precision * 90 + Math.min(5, state.closeMissStreak) * 18) / 10) * 10;
     awardBonus(state, bonus, "Close miss");
@@ -1241,9 +1320,15 @@ function createHud(shell) {
     <div class="hud-tools">
       <button class="hud-icon-button pause-button" type="button" aria-label="Pause">II</button>
       <button class="hud-icon-button controls-button" type="button" aria-label="Controls">⌨</button>
+      <button class="hud-icon-button mute-button" type="button" aria-label="Mute audio">♪</button>
     </div>
     <div class="controls-panel" hidden>
       <div class="controls-panel-title">Controls</div>
+      <div class="difficulty-row" role="group" aria-label="Difficulty">
+        ${Object.entries(DIFFICULTIES).map(([id, difficulty]) => `
+          <button class="difficulty-button" type="button" data-difficulty="${id}">${difficulty.label}</button>
+        `).join("")}
+      </div>
       ${CONTROL_ACTIONS.map((action) => `
         <button class="keybind-button" type="button" data-action="${action.id}">
           <span>${action.label}</span><strong></strong>
@@ -1274,7 +1359,9 @@ function createHud(shell) {
   const bonusToast = hud.querySelector(".bonus-toast");
   const pauseButton = hud.querySelector(".pause-button");
   const controlsButton = hud.querySelector(".controls-button");
+  const muteButton = hud.querySelector(".mute-button");
   const controlsPanel = hud.querySelector(".controls-panel");
+  const difficultyButtons = [...hud.querySelectorAll(".difficulty-button")];
   const keybindButtons = [...hud.querySelectorAll(".keybind-button")];
   const resetKeybinds = hud.querySelector(".reset-keybinds");
   const hint = hud.querySelector(".race-hint");
@@ -1284,7 +1371,11 @@ function createHud(shell) {
   const pauseHandlers = new Set();
   const resumeHandlers = new Set();
   const bindingHandlers = new Set();
+  const difficultyHandlers = new Set();
+  const muteHandlers = new Set();
   let bindings = { ...DEFAULT_KEY_BINDINGS };
+  let difficulty = DEFAULT_DIFFICULTY;
+  let muted = false;
   let remappingAction = "";
 
   function startClick() {
@@ -1301,6 +1392,18 @@ function createHud(shell) {
 
   function controlsClick() {
     controlsPanel.hidden = !controlsPanel.hidden;
+  }
+
+  function muteClick() {
+    muted = !muted;
+    refreshMuted();
+    for (const handler of muteHandlers) handler(muted);
+  }
+
+  function difficultyClick(event) {
+    difficulty = normalizeDifficulty(event.currentTarget.dataset.difficulty);
+    refreshDifficulty();
+    for (const handler of difficultyHandlers) handler(difficulty);
   }
 
   function keybindClick(event) {
@@ -1342,9 +1445,23 @@ function createHud(shell) {
     }
   }
 
+  function refreshDifficulty() {
+    for (const button of difficultyButtons) {
+      button.classList.toggle("is-selected", button.dataset.difficulty === difficulty);
+    }
+  }
+
+  function refreshMuted() {
+    muteButton.textContent = muted ? "×" : "♪";
+    muteButton.setAttribute("aria-label", muted ? "Unmute audio" : "Mute audio");
+    muteButton.classList.toggle("is-muted", muted);
+  }
+
   overlay.addEventListener("click", startClick);
   pauseButton.addEventListener("click", pauseClick);
   controlsButton.addEventListener("click", controlsClick);
+  muteButton.addEventListener("click", muteClick);
+  for (const button of difficultyButtons) button.addEventListener("click", difficultyClick);
   resetKeybinds.addEventListener("click", resetClick);
   for (const button of keybindButtons) button.addEventListener("click", keybindClick);
   window.addEventListener("keydown", remapKeyDown, true);
@@ -1362,14 +1479,28 @@ function createHud(shell) {
     onBindingsChange(handler) {
       bindingHandlers.add(handler);
     },
+    onDifficultyChange(handler) {
+      difficultyHandlers.add(handler);
+    },
+    onMuteChange(handler) {
+      muteHandlers.add(handler);
+    },
     setKeyBindings(nextBindings) {
       bindings = normalizeKeyBindings(nextBindings);
       refreshKeybinds();
     },
+    setDifficulty(nextDifficulty) {
+      difficulty = normalizeDifficulty(nextDifficulty);
+      refreshDifficulty();
+    },
+    setMuted(nextMuted) {
+      muted = Boolean(nextMuted);
+      refreshMuted();
+    },
     setReady(best) {
       overlay.dataset.mode = "start";
       title.textContent = "Apex Slipstream";
-      copy.textContent = best > 0 ? `Best ${best} m · tap to race` : "Tap to race";
+      copy.textContent = best > 0 ? `Best ${best} m · ${DIFFICULTIES[difficulty].label} · tap to race` : `${DIFFICULTIES[difficulty].label} · tap to race`;
       bestValue.textContent = `${best} m`;
     },
     setError(message) {
@@ -1390,7 +1521,7 @@ function createHud(shell) {
       overlay.hidden = false;
       overlay.dataset.mode = "start";
       title.textContent = state.crashReason === "Wall" ? "Ran out of track" : "Wheel-to-wheel hit";
-      copy.textContent = `${state.score} m · best ${state.best} m · tap retry`;
+      copy.textContent = `${state.score} m · ${formatRunStats(state)} · tap retry`;
     },
     update(state) {
       distanceValue.textContent = `${state.score} m`;
@@ -1413,6 +1544,8 @@ function createHud(shell) {
       overlay.removeEventListener("click", startClick);
       pauseButton.removeEventListener("click", pauseClick);
       controlsButton.removeEventListener("click", controlsClick);
+      muteButton.removeEventListener("click", muteClick);
+      for (const button of difficultyButtons) button.removeEventListener("click", difficultyClick);
       resetKeybinds.removeEventListener("click", resetClick);
       for (const button of keybindButtons) button.removeEventListener("click", keybindClick);
       window.removeEventListener("keydown", remapKeyDown, true);
@@ -1420,8 +1553,16 @@ function createHud(shell) {
       pauseHandlers.clear();
       resumeHandlers.clear();
       bindingHandlers.clear();
+      difficultyHandlers.clear();
+      muteHandlers.clear();
     },
   };
+}
+
+function formatRunStats(state) {
+  const seconds = Math.max(1, Math.round(state.stats.runTime));
+  const topSpeed = Math.round(state.stats.topSpeed);
+  return `best ${state.best} m · ${state.stats.closeMisses} near misses · ${state.stats.pickups} pickups · ${topSpeed} top speed · ${seconds}s`;
 }
 
 function formatKey(code) {
@@ -1445,6 +1586,7 @@ function createAudioController(sdk) {
   let engine = null;
   let engineGain = null;
   let lastDraft = 0;
+  let muted = false;
 
   return {
     async unlock() {
@@ -1475,19 +1617,28 @@ function createAudioController(sdk) {
       if (!context || !engine || !engineGain) return;
       const now = context.currentTime;
       engine.frequency.setTargetAtTime(55 + speed * 0.13, now, 0.045);
-      engineGain.gain.setTargetAtTime(running ? 0.028 : 0.0001, now, 0.08);
+      engineGain.gain.setTargetAtTime(running && !muted ? 0.028 : 0.0001, now, 0.08);
     },
     draftPing() {
-      if (!context || context.currentTime - lastDraft < 0.42) return;
+      if (muted || !context || context.currentTime - lastDraft < 0.42) return;
       lastDraft = context.currentTime;
       tone(context, 520, 0.05, 0.018, "sine");
       tone(context, 780, 0.08, 0.012, "triangle");
     },
     crash() {
-      if (!context) return;
+      if (muted || !context) return;
       tone(context, 90, 0.24, 0.065, "sawtooth");
       tone(context, 48, 0.34, 0.09, "square");
       if (engineGain) engineGain.gain.setTargetAtTime(0.0001, context.currentTime, 0.035);
+    },
+    setMuted(nextMuted) {
+      muted = Boolean(nextMuted);
+      if (engineGain && context) {
+        engineGain.gain.setTargetAtTime(0.0001, context.currentTime, 0.035);
+      }
+    },
+    isMuted() {
+      return muted;
     },
     dispose() {
       if (engine) {
