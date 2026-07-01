@@ -1,0 +1,87 @@
+{
+  "image": "/generated-assets/rival_cars-transparent.webp",
+  "grid": {
+    "cols": 2,
+    "rows": 2,
+    "frameWidth": 320,
+    "frameHeight": 320
+  },
+  "frames": [
+    {
+      "name": "red_car",
+      "source": {
+        "x": 56,
+        "y": 56,
+        "w": 320,
+        "h": 320
+      },
+      "content": {
+        "x": 119,
+        "y": 29,
+        "w": 197,
+        "h": 372
+      },
+      "anchor": {
+        "x": 218,
+        "y": 400
+      }
+    },
+    {
+      "name": "yellow_car",
+      "source": {
+        "x": 440,
+        "y": 56,
+        "w": 320,
+        "h": 320
+      },
+      "content": {
+        "x": 483,
+        "y": 27,
+        "w": 200,
+        "h": 373
+      },
+      "anchor": {
+        "x": 583,
+        "y": 399
+      }
+    },
+    {
+      "name": "green_car",
+      "source": {
+        "x": 56,
+        "y": 440,
+        "w": 320,
+        "h": 320
+      },
+      "content": {
+        "x": 117,
+        "y": 425,
+        "w": 199,
+        "h": 372
+      },
+      "anchor": {
+        "x": 217,
+        "y": 796
+      }
+    },
+    {
+      "name": "white_car",
+      "source": {
+        "x": 440,
+        "y": 440,
+        "w": 320,
+        "h": 320
+      },
+      "content": {
+        "x": 482,
+        "y": 426,
+        "w": 202,
+        "h": 376
+      },
+      "anchor": {
+        "x": 583,
+        "y": 801
+      }
+    }
+  ]
+}
