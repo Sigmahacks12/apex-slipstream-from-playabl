@@ -17,10 +17,10 @@ http://localhost:5173/
 
 ## Public URL
 
-Stable static URL:
-https://raw.githack.com/Sigmahacks12/apex-slipstream-from-playabl/main/public-build/index.html
+Stable public game URL:
+https://sigmahacks12.github.io/apex-slipstream-from-playabl/
 
-The committed `public-build/` folder is built with relative asset paths so it can be served from a GitHub-backed static URL without extra repository settings.
+The `gh-pages` branch serves the static build. The committed `public-build/` folder on `main` is the source used to update that branch.
 
 ## Notes
 
