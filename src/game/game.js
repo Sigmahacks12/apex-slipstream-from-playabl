@@ -1,11 +1,17 @@
+const BASE_URL = import.meta.env.BASE_URL || "/";
+
+function assetUrl(path) {
+  return `${BASE_URL.replace(/\/?$/, "/")}${path}`;
+}
+
 const FALLBACKS = {
-  PLAYER_CAR: "/generated-assets/player_car-transparent.webp",
-  RIVAL_CARS: "/generated-assets/rival_cars-transparent.webp",
-  RIVAL_CARS_FRAMES: "/generated-assets/rival_cars-transparent.frames.json",
-  ASPHALT_TEXTURE: "/generated-assets/asphalt_texture.webp",
-  GRANDSTAND_BACKDROP: "/generated-assets/grandstand_backdrop.webp",
-  RACING_EFFECTS: "/generated-assets/racing_effects-transparent.webp",
-  RACING_EFFECTS_FRAMES: "/generated-assets/racing_effects-transparent.frames.json",
+  PLAYER_CAR: assetUrl("generated-assets/player_car-transparent.webp"),
+  RIVAL_CARS: assetUrl("generated-assets/rival_cars-transparent.webp"),
+  RIVAL_CARS_FRAMES: assetUrl("generated-assets/rival_cars-transparent.frames.json"),
+  ASPHALT_TEXTURE: assetUrl("generated-assets/asphalt_texture.webp"),
+  GRANDSTAND_BACKDROP: assetUrl("generated-assets/grandstand_backdrop.webp"),
+  RACING_EFFECTS: assetUrl("generated-assets/racing_effects-transparent.webp"),
+  RACING_EFFECTS_FRAMES: assetUrl("generated-assets/racing_effects-transparent.frames.json"),
 };
 
 const DEFAULT_TWEAKS = {

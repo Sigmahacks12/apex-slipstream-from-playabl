@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0 --port 5173 --strictPort",
     "lint": "eslint src",
     "build": "eslint src && vite build",
+    "build:static": "eslint src && vite build --base=./ --outDir public-build && cp -R generated-assets public-build/generated-assets",
     "preview": "vite preview --host 0.0.0.0"
   },
   "devDependencies": {

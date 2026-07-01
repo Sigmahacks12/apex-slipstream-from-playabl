@@ -17,10 +17,10 @@ http://localhost:5173/
 
 ## Public URL
 
-The GitHub Pages deployment URL is:
-https://sigmahacks12.github.io/apex-slipstream-from-playabl/
+Stable static URL:
+https://raw.githack.com/Sigmahacks12/apex-slipstream-from-playabl/main/public-build/index.html
 
-The deployment runs from `.github/workflows/deploy-pages.yml` whenever `main` is pushed.
+The committed `public-build/` folder is built with relative asset paths so it can be served from a GitHub-backed static URL without extra repository settings.
 
 ## Notes
 
