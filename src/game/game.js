@@ -46,11 +46,29 @@ const DEFAULT_KEY_BINDINGS = {
 const KEY_BINDING_STORAGE = "apexSlipstream.keyBindings.v1";
 const DIFFICULTY_STORAGE = "apexSlipstream.difficulty.v1";
 const MUTE_STORAGE = "apexSlipstream.muted.v1";
+const SKIN_STORAGE = "apexSlipstream.skin.v1";
+const ENVIRONMENT_STORAGE = "apexSlipstream.environment.v1";
+const TUTORIAL_STORAGE = "apexSlipstream.tutorialSeen.v1";
+const LEADERBOARD_STORAGE = "apexSlipstream.leaderboard.v1";
+const ANALYTICS_STORAGE = "apexSlipstream.analytics.v1";
 const CONTROL_ACTIONS = [
   { id: "left", label: "Left" },
   { id: "right", label: "Right" },
   { id: "pause", label: "Pause" },
 ];
+const CAR_SKINS = {
+  apex: { label: "Apex", tint: "rgba(77, 238, 255, 0.18)", glow: "rgba(77, 238, 255, 0.62)" },
+  ember: { label: "Ember", tint: "rgba(255, 95, 78, 0.24)", glow: "rgba(255, 112, 72, 0.64)" },
+  venom: { label: "Venom", tint: "rgba(112, 255, 147, 0.22)", glow: "rgba(112, 255, 147, 0.58)" },
+  royal: { label: "Royal", tint: "rgba(158, 134, 255, 0.24)", glow: "rgba(158, 134, 255, 0.62)" },
+};
+const ENVIRONMENTS = {
+  neon: { label: "Neon Run", sky: "rgba(77, 238, 255, 0.14)", roadGlow: "rgba(70, 238, 255, 0.18)", barrierA: "rgba(69, 237, 255, 0.34)", barrierB: "rgba(255, 79, 107, 0.28)" },
+  sunset: { label: "Sunset", sky: "rgba(255, 151, 83, 0.18)", roadGlow: "rgba(255, 184, 92, 0.2)", barrierA: "rgba(255, 184, 92, 0.36)", barrierB: "rgba(94, 220, 255, 0.24)" },
+  midnight: { label: "Midnight", sky: "rgba(126, 113, 255, 0.16)", roadGlow: "rgba(159, 142, 255, 0.2)", barrierA: "rgba(159, 142, 255, 0.36)", barrierB: "rgba(69, 237, 255, 0.24)" },
+};
+const DEFAULT_SKIN = "apex";
+const DEFAULT_ENVIRONMENT = "neon";
 
 export function createGame({ mount, sdk, tweaks, assets }) {
   let cleanup = () => {};
@@ -74,6 +92,11 @@ export function createGame({ mount, sdk, tweaks, assets }) {
       const audio = createAudioController(sdk);
       const keyBindings = createKeyBindings();
       state.difficulty = readDifficulty();
+      state.skin = readSkin();
+      state.environment = readEnvironment();
+      state.tutorialSeen = readTutorialSeen();
+      state.leaderboard = readLocalLeaderboard();
+      trackEvent("loads");
       audio.setMuted(readMuted());
       const controls = createControls(canvas, () => canvas.getBoundingClientRect(), keyBindings.values, () => {
         if (state.mode === "running") {
@@ -83,7 +106,7 @@ export function createGame({ mount, sdk, tweaks, assets }) {
           state.mode = "running";
           hud.hideOverlay();
         }
-      });
+      }, hud.getTouchControls());
 
       let disposed = false;
       let frameId = 0;
@@ -103,6 +126,7 @@ export function createGame({ mount, sdk, tweaks, assets }) {
           state.best = best;
           assetsReady = true;
           resetRace(state, viewport);
+          state.mode = "menu";
           hud.setReady(state.best);
         })
         .catch(() => {
@@ -115,6 +139,9 @@ export function createGame({ mount, sdk, tweaks, assets }) {
         resultSubmitted = false;
         resetRace(state, viewport);
         state.mode = "running";
+        state.tutorialSeen = true;
+        saveTutorialSeen();
+        trackEvent("starts");
         controls.reset(state.player.x);
         hud.hideOverlay();
         audio.unlock().then(() => audio.startEngine()).catch(() => {});
@@ -138,14 +165,30 @@ export function createGame({ mount, sdk, tweaks, assets }) {
         state.difficulty = normalizeDifficulty(difficulty);
         saveDifficulty(state.difficulty);
         hud.setDifficulty(state.difficulty);
+        hud.setReady(Math.max(state.best, state.score));
+      });
+      hud.onSkinChange((skin) => {
+        state.skin = normalizeSkin(skin);
+        saveSkin(state.skin);
+        hud.setSkin(state.skin);
+      });
+      hud.onEnvironmentChange((environment) => {
+        state.environment = normalizeEnvironment(environment);
+        saveEnvironment(state.environment);
+        hud.setEnvironment(state.environment);
       });
       hud.onMuteChange((muted) => {
         audio.setMuted(muted);
         saveMuted(audio.isMuted());
         hud.setMuted(audio.isMuted());
       });
+      hud.onShare(() => {
+        shareGame(state);
+      });
       hud.setKeyBindings(keyBindings.values);
       hud.setDifficulty(state.difficulty);
+      hud.setSkin(state.skin);
+      hud.setEnvironment(state.environment);
       hud.setMuted(audio.isMuted());
 
       function resize() {
@@ -388,12 +431,141 @@ function saveMuted(muted) {
   }
 }
 
-function createControls(surface, getBounds, initialBindings, onPause) {
+function readSkin() {
+  try {
+    return normalizeSkin(window.localStorage.getItem(SKIN_STORAGE));
+  } catch {
+    return DEFAULT_SKIN;
+  }
+}
+
+function saveSkin(skin) {
+  try {
+    window.localStorage.setItem(SKIN_STORAGE, normalizeSkin(skin));
+  } catch {
+    // Cosmetic choices can fall back to defaults.
+  }
+}
+
+function normalizeSkin(skin) {
+  return CAR_SKINS[skin] ? skin : DEFAULT_SKIN;
+}
+
+function readEnvironment() {
+  try {
+    return normalizeEnvironment(window.localStorage.getItem(ENVIRONMENT_STORAGE));
+  } catch {
+    return DEFAULT_ENVIRONMENT;
+  }
+}
+
+function saveEnvironment(environment) {
+  try {
+    window.localStorage.setItem(ENVIRONMENT_STORAGE, normalizeEnvironment(environment));
+  } catch {
+    // Cosmetic choices can fall back to defaults.
+  }
+}
+
+function normalizeEnvironment(environment) {
+  return ENVIRONMENTS[environment] ? environment : DEFAULT_ENVIRONMENT;
+}
+
+function readTutorialSeen() {
+  try {
+    return window.localStorage.getItem(TUTORIAL_STORAGE) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveTutorialSeen() {
+  try {
+    window.localStorage.setItem(TUTORIAL_STORAGE, "true");
+  } catch {
+    // The tutorial can show again if storage is blocked.
+  }
+}
+
+function readLocalLeaderboard() {
+  try {
+    const rows = JSON.parse(window.localStorage.getItem(LEADERBOARD_STORAGE) || "[]");
+    return normalizeLeaderboard(rows);
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalLeaderboard(rows) {
+  try {
+    window.localStorage.setItem(LEADERBOARD_STORAGE, JSON.stringify(normalizeLeaderboard(rows)));
+  } catch {
+    // Scores still submit to the host when available.
+  }
+}
+
+function normalizeLeaderboard(rows) {
+  return Array.isArray(rows)
+    ? rows
+      .filter((row) => Number.isFinite(row?.score))
+      .map((row) => ({
+        score: Math.max(0, Math.floor(row.score)),
+        difficulty: normalizeDifficulty(row.difficulty),
+        closeMisses: Math.max(0, Math.floor(row.closeMisses || 0)),
+        date: typeof row.date === "string" ? row.date : new Date().toISOString(),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+    : [];
+}
+
+function trackEvent(name) {
+  try {
+    const analytics = JSON.parse(window.localStorage.getItem(ANALYTICS_STORAGE) || "{}");
+    analytics[name] = Math.max(0, Number(analytics[name]) || 0) + 1;
+    analytics.updatedAt = new Date().toISOString();
+    window.localStorage.setItem(ANALYTICS_STORAGE, JSON.stringify(analytics));
+  } catch {
+    // Analytics are intentionally local and optional.
+  }
+}
+
+async function shareGame(state) {
+  const score = Math.max(state.score, state.best);
+  const text = score > 0
+    ? `I scored ${score} m in Apex Slipstream. Can you beat it?`
+    : "Play Apex Slipstream, a fast browser racing game.";
+  const shareData = {
+    title: "Apex Slipstream",
+    text,
+    url: window.location.href,
+  };
+
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData);
+      trackEvent("shares");
+      return;
+    } catch {
+      // Fall back to clipboard when native share is cancelled or unavailable.
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(`${text} ${window.location.href}`);
+    trackEvent("shares");
+  } catch {
+    window.prompt("Share Apex Slipstream", `${text} ${window.location.href}`);
+  }
+}
+
+function createControls(surface, getBounds, initialBindings, onPause, touchControls = {}) {
   const state = {
     active: false,
     pointerId: null,
     pointerX: 0,
     steer: 0,
+    touchSteer: 0,
   };
   const keys = new Set();
   let bindings = normalizeKeyBindings(initialBindings);
@@ -442,6 +614,39 @@ function createControls(surface, getBounds, initialBindings, onPause) {
     keys.delete(event.code);
   }
 
+  function touchSteer(value) {
+    state.touchSteer = value;
+  }
+
+  function clearTouchSteer(value) {
+    if (state.touchSteer === value) state.touchSteer = 0;
+  }
+
+  function addTouchButton(button, value) {
+    if (!button) return () => {};
+    const down = (event) => {
+      touchSteer(value);
+      event.preventDefault();
+    };
+    const up = (event) => {
+      clearTouchSteer(value);
+      event.preventDefault();
+    };
+    button.addEventListener("pointerdown", down);
+    button.addEventListener("pointerup", up);
+    button.addEventListener("pointercancel", up);
+    button.addEventListener("pointerleave", up);
+    return () => {
+      button.removeEventListener("pointerdown", down);
+      button.removeEventListener("pointerup", up);
+      button.removeEventListener("pointercancel", up);
+      button.removeEventListener("pointerleave", up);
+    };
+  }
+
+  const removeTouchLeft = addTouchButton(touchControls.left, -1);
+  const removeTouchRight = addTouchButton(touchControls.right, 1);
+
   surface.addEventListener("pointerdown", onPointerDown);
   surface.addEventListener("pointermove", onPointerMove);
   surface.addEventListener("pointerup", onPointerUp);
@@ -453,7 +658,7 @@ function createControls(surface, getBounds, initialBindings, onPause) {
     sample() {
       const left = keys.has(bindings.left);
       const right = keys.has(bindings.right);
-      state.steer = (right ? 1 : 0) - (left ? 1 : 0);
+      state.steer = state.touchSteer || (right ? 1 : 0) - (left ? 1 : 0);
       return { active: state.active, pointerX: state.pointerX, steer: state.steer };
     },
     setBindings(nextBindings) {
@@ -465,6 +670,7 @@ function createControls(surface, getBounds, initialBindings, onPause) {
       state.active = false;
       state.pointerId = null;
       state.steer = 0;
+      state.touchSteer = 0;
       keys.clear();
     },
     dispose() {
@@ -474,6 +680,8 @@ function createControls(surface, getBounds, initialBindings, onPause) {
       surface.removeEventListener("pointercancel", onPointerUp);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      removeTouchLeft();
+      removeTouchRight();
     },
   };
 }
@@ -487,6 +695,10 @@ function createRaceState() {
     best: 0,
     speed: 0,
     difficulty: DEFAULT_DIFFICULTY,
+    skin: DEFAULT_SKIN,
+    environment: DEFAULT_ENVIRONMENT,
+    tutorialSeen: false,
+    leaderboard: [],
     boost: 0,
     draftPulse: 0,
     shake: 0,
@@ -629,6 +841,17 @@ function updateRace(state, dt, input, tuning, viewport, feedback) {
 async function finishRun(state, sdk) {
   const score = Math.max(0, Math.floor(state.score));
   state.best = Math.max(state.best, score);
+  state.leaderboard = normalizeLeaderboard([
+    ...state.leaderboard,
+    {
+      score,
+      difficulty: state.difficulty,
+      closeMisses: state.stats.closeMisses,
+      date: new Date().toISOString(),
+    },
+  ]);
+  saveLocalLeaderboard(state.leaderboard);
+  trackEvent("finishes");
   try {
     await sdk.gameState.save({ version: 1, bestScore: state.best });
   } catch {
@@ -926,7 +1149,7 @@ function renderRace(ctx, state, gameAssets, viewport, time, tuning) {
     ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
   }
 
-  drawBackdrop(ctx, gameAssets.images.backdrop, viewport, state.distance);
+  drawBackdrop(ctx, gameAssets.images.backdrop, viewport, state.distance, state.environment);
   drawRoad(ctx, state, gameAssets, viewport);
   drawAtmosphere(ctx, state, viewport, time, tuning);
   drawSpeedStreaks(ctx, state, viewport, time, tuning);
@@ -941,7 +1164,8 @@ function renderRace(ctx, state, gameAssets, viewport, time, tuning) {
   ctx.restore();
 }
 
-function drawBackdrop(ctx, image, viewport, distance) {
+function drawBackdrop(ctx, image, viewport, distance, environmentId) {
+  const environment = ENVIRONMENTS[normalizeEnvironment(environmentId)];
   const scale = Math.max(viewport.width / image.width, viewport.height / image.height);
   const width = image.width * scale;
   const height = image.height * scale;
@@ -949,6 +1173,8 @@ function drawBackdrop(ctx, image, viewport, distance) {
   const y = (viewport.height - height) * 0.5 + Math.sin(distance * 0.0004) * 12;
   ctx.drawImage(image, x, y, width, height);
   ctx.fillStyle = "rgba(2, 8, 16, 0.18)";
+  ctx.fillRect(0, 0, viewport.width, viewport.height);
+  ctx.fillStyle = environment.sky;
   ctx.fillRect(0, 0, viewport.width, viewport.height);
 }
 
@@ -987,7 +1213,7 @@ function drawRoad(ctx, state, gameAssets, viewport) {
   drawCurbs(ctx, state, viewport);
   drawTracksideBarriers(ctx, state, viewport);
   drawLaneLines(ctx, state, viewport);
-  drawRoadGlow(ctx, path);
+  drawRoadGlow(ctx, path, state.environment);
 }
 
 function buildRoadPath(state, viewport) {
@@ -1057,6 +1283,7 @@ function drawRoadSurfaceDetails(ctx, state, viewport, path) {
 }
 
 function drawTracksideBarriers(ctx, state, viewport) {
+  const environment = ENVIRONMENTS[normalizeEnvironment(state.environment)];
   ctx.save();
   ctx.lineCap = "round";
   for (const side of [-1, 1]) {
@@ -1067,7 +1294,7 @@ function drawTracksideBarriers(ctx, state, viewport) {
       const x = side < 0 ? road.left - 22 : road.right + 22;
       const nx = side < 0 ? next.left - 22 : next.right + 22;
       const glow = Math.floor((station + state.distance * 0.2) / 180) % 2 === 0;
-      ctx.strokeStyle = glow ? "rgba(69, 237, 255, 0.34)" : "rgba(255, 79, 107, 0.28)";
+      ctx.strokeStyle = glow ? environment.barrierA : environment.barrierB;
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(x, y);
@@ -1097,9 +1324,10 @@ function drawLaneLines(ctx, state, viewport) {
   ctx.restore();
 }
 
-function drawRoadGlow(ctx, path) {
+function drawRoadGlow(ctx, path, environmentId) {
+  const environment = ENVIRONMENTS[normalizeEnvironment(environmentId)];
   ctx.save();
-  ctx.strokeStyle = "rgba(70, 238, 255, 0.18)";
+  ctx.strokeStyle = environment.roadGlow;
   ctx.lineWidth = 12;
   ctx.stroke(path);
   ctx.restore();
@@ -1237,6 +1465,7 @@ function drawRivals(ctx, state, gameAssets, viewport) {
 function drawPlayer(ctx, state, gameAssets, viewport, time) {
   const carH = getPlayerHeight(viewport);
   const carW = carH * (gameAssets.images.playerCar.width / gameAssets.images.playerCar.height);
+  const skin = CAR_SKINS[normalizeSkin(state.skin)];
   drawShadow(ctx, state.player.x, state.player.y + carH * 0.22, carW * 0.72, carH * 0.22);
 
   if (state.boost > 0.05) {
@@ -1265,6 +1494,15 @@ function drawPlayer(ctx, state, gameAssets, viewport, time) {
   ctx.translate(state.player.x, state.player.y);
   ctx.rotate(state.player.angle + Math.sin(time * 18) * state.player.scrape * 0.025);
   ctx.drawImage(gameAssets.images.playerCar, -carW * 0.5, -carH * 0.5, carW, carH);
+  ctx.globalCompositeOperation = "source-atop";
+  ctx.fillStyle = skin.tint;
+  ctx.fillRect(-carW * 0.5, -carH * 0.5, carW, carH);
+  ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = skin.glow;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-carW * 0.3, -carH * 0.4, carW * 0.6, carH * 0.8, carW * 0.12);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1328,6 +1566,10 @@ function createHud(shell) {
       <button class="hud-icon-button controls-button" type="button" aria-label="Controls">⌨</button>
       <button class="hud-icon-button mute-button" type="button" aria-label="Mute audio">♪</button>
     </div>
+    <div class="touch-steer" aria-label="Touch steering">
+      <button class="touch-steer-button touch-left" type="button" aria-label="Steer left">←</button>
+      <button class="touch-steer-button touch-right" type="button" aria-label="Steer right">→</button>
+    </div>
     <div class="controls-panel" hidden>
       <div class="controls-panel-title">Controls</div>
       <div class="difficulty-row" role="group" aria-label="Difficulty">
@@ -1340,6 +1582,18 @@ function createHud(shell) {
           <span>${action.label}</span><strong></strong>
         </button>
       `).join("")}
+      <div class="controls-panel-title">Car</div>
+      <div class="choice-row skin-row" role="group" aria-label="Car skin">
+        ${Object.entries(CAR_SKINS).map(([id, skin]) => `
+          <button class="skin-button" type="button" data-skin="${id}"><span style="--skin-color: ${skin.glow}"></span>${skin.label}</button>
+        `).join("")}
+      </div>
+      <div class="controls-panel-title">Track</div>
+      <div class="choice-row environment-row" role="group" aria-label="Track environment">
+        ${Object.entries(ENVIRONMENTS).map(([id, environment]) => `
+          <button class="environment-button" type="button" data-environment="${id}">${environment.label}</button>
+        `).join("")}
+      </div>
       <button class="reset-keybinds" type="button">Reset keys</button>
     </div>
     <div class="powerup-strip" aria-label="Active powerups"></div>
@@ -1348,12 +1602,26 @@ function createHud(shell) {
     <div class="race-hint" hidden>Drag to hold the racing line</div>
   `;
 
-  const overlay = document.createElement("button");
+  const overlay = document.createElement("div");
   overlay.className = "start-overlay";
-  overlay.type = "button";
   overlay.innerHTML = `
-    <span class="overlay-title">Apex Slipstream</span>
-    <span class="overlay-copy">Loading the grid…</span>
+    <div class="launch-panel">
+      <div class="overlay-kicker">Browser arcade racer</div>
+      <h1 class="overlay-title">Apex Slipstream</h1>
+      <p class="overlay-copy">Loading the grid...</p>
+      <div class="overlay-actions">
+        <button class="play-button" type="button">Play</button>
+        <button class="share-button" type="button">Share</button>
+      </div>
+      <div class="tutorial-card" hidden>
+        <strong>How to play</strong>
+        <span>Drag, tap arrows, or use keys to dodge traffic. Chain close misses, draft behind cars, and grab powerups.</span>
+      </div>
+      <div class="leaderboard-card" hidden>
+        <strong>Local leaderboard</strong>
+        <ol></ol>
+      </div>
+    </div>
   `;
 
   shell.append(hud, overlay);
@@ -1368,19 +1636,33 @@ function createHud(shell) {
   const muteButton = hud.querySelector(".mute-button");
   const controlsPanel = hud.querySelector(".controls-panel");
   const difficultyButtons = [...hud.querySelectorAll(".difficulty-button")];
+  const skinButtons = [...hud.querySelectorAll(".skin-button")];
+  const environmentButtons = [...hud.querySelectorAll(".environment-button")];
   const keybindButtons = [...hud.querySelectorAll(".keybind-button")];
   const resetKeybinds = hud.querySelector(".reset-keybinds");
+  const touchLeft = hud.querySelector(".touch-left");
+  const touchRight = hud.querySelector(".touch-right");
   const hint = hud.querySelector(".race-hint");
+  const playButton = overlay.querySelector(".play-button");
+  const shareButton = overlay.querySelector(".share-button");
   const title = overlay.querySelector(".overlay-title");
   const copy = overlay.querySelector(".overlay-copy");
+  const tutorialCard = overlay.querySelector(".tutorial-card");
+  const leaderboardCard = overlay.querySelector(".leaderboard-card");
+  const leaderboardList = overlay.querySelector(".leaderboard-card ol");
   const startHandlers = new Set();
   const pauseHandlers = new Set();
   const resumeHandlers = new Set();
   const bindingHandlers = new Set();
   const difficultyHandlers = new Set();
+  const skinHandlers = new Set();
+  const environmentHandlers = new Set();
   const muteHandlers = new Set();
+  const shareHandlers = new Set();
   let bindings = { ...DEFAULT_KEY_BINDINGS };
   let difficulty = DEFAULT_DIFFICULTY;
+  let skin = DEFAULT_SKIN;
+  let environment = DEFAULT_ENVIRONMENT;
   let muted = false;
   let remappingAction = "";
 
@@ -1406,10 +1688,27 @@ function createHud(shell) {
     for (const handler of muteHandlers) handler(muted);
   }
 
+  function shareClick(event) {
+    event.stopPropagation();
+    for (const handler of shareHandlers) handler();
+  }
+
   function difficultyClick(event) {
     difficulty = normalizeDifficulty(event.currentTarget.dataset.difficulty);
     refreshDifficulty();
     for (const handler of difficultyHandlers) handler(difficulty);
+  }
+
+  function skinClick(event) {
+    skin = normalizeSkin(event.currentTarget.dataset.skin);
+    refreshSkin();
+    for (const handler of skinHandlers) handler(skin);
+  }
+
+  function environmentClick(event) {
+    environment = normalizeEnvironment(event.currentTarget.dataset.environment);
+    refreshEnvironment();
+    for (const handler of environmentHandlers) handler(environment);
   }
 
   function keybindClick(event) {
@@ -1457,17 +1756,32 @@ function createHud(shell) {
     }
   }
 
+  function refreshSkin() {
+    for (const button of skinButtons) {
+      button.classList.toggle("is-selected", button.dataset.skin === skin);
+    }
+  }
+
+  function refreshEnvironment() {
+    for (const button of environmentButtons) {
+      button.classList.toggle("is-selected", button.dataset.environment === environment);
+    }
+  }
+
   function refreshMuted() {
     muteButton.textContent = muted ? "×" : "♪";
     muteButton.setAttribute("aria-label", muted ? "Unmute audio" : "Mute audio");
     muteButton.classList.toggle("is-muted", muted);
   }
 
-  overlay.addEventListener("click", startClick);
+  playButton.addEventListener("click", startClick);
+  shareButton.addEventListener("click", shareClick);
   pauseButton.addEventListener("click", pauseClick);
   controlsButton.addEventListener("click", controlsClick);
   muteButton.addEventListener("click", muteClick);
   for (const button of difficultyButtons) button.addEventListener("click", difficultyClick);
+  for (const button of skinButtons) button.addEventListener("click", skinClick);
+  for (const button of environmentButtons) button.addEventListener("click", environmentClick);
   resetKeybinds.addEventListener("click", resetClick);
   for (const button of keybindButtons) button.addEventListener("click", keybindClick);
   window.addEventListener("keydown", remapKeyDown, true);
@@ -1488,8 +1802,20 @@ function createHud(shell) {
     onDifficultyChange(handler) {
       difficultyHandlers.add(handler);
     },
+    onSkinChange(handler) {
+      skinHandlers.add(handler);
+    },
+    onEnvironmentChange(handler) {
+      environmentHandlers.add(handler);
+    },
     onMuteChange(handler) {
       muteHandlers.add(handler);
+    },
+    onShare(handler) {
+      shareHandlers.add(handler);
+    },
+    getTouchControls() {
+      return { left: touchLeft, right: touchRight };
     },
     setKeyBindings(nextBindings) {
       bindings = normalizeKeyBindings(nextBindings);
@@ -1499,6 +1825,14 @@ function createHud(shell) {
       difficulty = normalizeDifficulty(nextDifficulty);
       refreshDifficulty();
     },
+    setSkin(nextSkin) {
+      skin = normalizeSkin(nextSkin);
+      refreshSkin();
+    },
+    setEnvironment(nextEnvironment) {
+      environment = normalizeEnvironment(nextEnvironment);
+      refreshEnvironment();
+    },
     setMuted(nextMuted) {
       muted = Boolean(nextMuted);
       refreshMuted();
@@ -1506,7 +1840,7 @@ function createHud(shell) {
     setReady(best) {
       overlay.dataset.mode = "start";
       title.textContent = "Apex Slipstream";
-      copy.textContent = best > 0 ? `Best ${best} m · ${DIFFICULTIES[difficulty].label} · tap to race` : `${DIFFICULTIES[difficulty].label} · tap to race`;
+      copy.textContent = best > 0 ? `Best ${best} m · ${DIFFICULTIES[difficulty].label}` : `${DIFFICULTIES[difficulty].label} · ready to race`;
       bestValue.textContent = `${best} m`;
     },
     setError(message) {
@@ -1521,13 +1855,19 @@ function createHud(shell) {
       overlay.hidden = false;
       overlay.dataset.mode = "paused";
       title.textContent = "Paused";
-      copy.textContent = `${state.score} m · tap to resume`;
+      copy.textContent = `${state.score} m · resume when ready`;
+      playButton.textContent = "Resume";
+      tutorialCard.hidden = true;
+      refreshLeaderboard(state.leaderboard);
     },
     showResult(state) {
       overlay.hidden = false;
       overlay.dataset.mode = "start";
       title.textContent = state.crashReason === "Wall" ? "Ran out of track" : "Wheel-to-wheel hit";
       copy.textContent = `${state.score} m · ${formatRunStats(state)} · tap retry`;
+      playButton.textContent = "Retry";
+      tutorialCard.hidden = true;
+      refreshLeaderboard(state.leaderboard);
     },
     update(state) {
       distanceValue.textContent = `${state.score} m`;
@@ -1545,13 +1885,21 @@ function createHud(shell) {
       bonusToast.textContent = state.bonusText;
       bonusToast.style.opacity = String(clamp(state.bonusFlash, 0, 1));
       hint.hidden = !(state.mode === "running" && state.showHintFor > 0);
+      if (!overlay.hidden && overlay.dataset.mode === "start") {
+        playButton.textContent = state.score > 0 ? "Retry" : "Play";
+        tutorialCard.hidden = state.tutorialSeen;
+        refreshLeaderboard(state.leaderboard);
+      }
     },
     dispose() {
-      overlay.removeEventListener("click", startClick);
+      playButton.removeEventListener("click", startClick);
+      shareButton.removeEventListener("click", shareClick);
       pauseButton.removeEventListener("click", pauseClick);
       controlsButton.removeEventListener("click", controlsClick);
       muteButton.removeEventListener("click", muteClick);
       for (const button of difficultyButtons) button.removeEventListener("click", difficultyClick);
+      for (const button of skinButtons) button.removeEventListener("click", skinClick);
+      for (const button of environmentButtons) button.removeEventListener("click", environmentClick);
       resetKeybinds.removeEventListener("click", resetClick);
       for (const button of keybindButtons) button.removeEventListener("click", keybindClick);
       window.removeEventListener("keydown", remapKeyDown, true);
@@ -1560,9 +1908,20 @@ function createHud(shell) {
       resumeHandlers.clear();
       bindingHandlers.clear();
       difficultyHandlers.clear();
+      skinHandlers.clear();
+      environmentHandlers.clear();
       muteHandlers.clear();
+      shareHandlers.clear();
     },
   };
+
+  function refreshLeaderboard(rows) {
+    const normalized = normalizeLeaderboard(rows);
+    leaderboardCard.hidden = normalized.length === 0;
+    leaderboardList.innerHTML = normalized.map((row) => `
+      <li><span>${row.score} m</span><small>${DIFFICULTIES[row.difficulty].label} · ${row.closeMisses} misses</small></li>
+    `).join("");
+  }
 }
 
 function formatRunStats(state) {
