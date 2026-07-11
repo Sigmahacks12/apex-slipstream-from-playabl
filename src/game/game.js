@@ -69,6 +69,7 @@ const ENVIRONMENTS = {
 };
 const DEFAULT_SKIN = "apex";
 const DEFAULT_ENVIRONMENT = "neon";
+const PIXEL_RENDER_SCALE = 3;
 
 export function createGame({ mount, sdk, tweaks, assets }) {
   let cleanup = () => {};
@@ -193,15 +194,15 @@ export function createGame({ mount, sdk, tweaks, assets }) {
 
       function resize() {
         const rect = shell.getBoundingClientRect();
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         viewport.width = Math.max(1, rect.width);
         viewport.height = Math.max(1, rect.height);
-        viewport.dpr = dpr;
-        canvas.width = Math.round(viewport.width * dpr);
-        canvas.height = Math.round(viewport.height * dpr);
+        viewport.dpr = 1 / PIXEL_RENDER_SCALE;
+        canvas.width = Math.max(1, Math.round(viewport.width / PIXEL_RENDER_SCALE));
+        canvas.height = Math.max(1, Math.round(viewport.height / PIXEL_RENDER_SCALE));
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
-        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        context.imageSmoothingEnabled = false;
+        context.setTransform(1 / PIXEL_RENDER_SCALE, 0, 0, 1 / PIXEL_RENDER_SCALE, 0, 0);
         if (state.mode !== "running") resetRace(state, viewport, { keepBest: true });
       }
 
@@ -1160,6 +1161,7 @@ function renderRace(ctx, state, gameAssets, viewport, time, tuning) {
   drawRivals(ctx, state, gameAssets, viewport);
   drawPlayer(ctx, state, gameAssets, viewport, time);
   drawParticles(ctx, state, tuning);
+  drawPixelOverlay(ctx, viewport, state);
   drawVignette(ctx, viewport, state);
   ctx.restore();
 }
@@ -1176,6 +1178,27 @@ function drawBackdrop(ctx, image, viewport, distance, environmentId) {
   ctx.fillRect(0, 0, viewport.width, viewport.height);
   ctx.fillStyle = environment.sky;
   ctx.fillRect(0, 0, viewport.width, viewport.height);
+  drawPixelSkyDetails(ctx, viewport, distance, environmentId);
+}
+
+function drawPixelSkyDetails(ctx, viewport, distance, environmentId) {
+  const unit = Math.max(6, Math.round(Math.min(viewport.width, viewport.height) / 68));
+  const speed = distance * 0.035;
+  const cloudColor = environmentId === "midnight" ? "rgba(145, 226, 255, 0.45)" : "rgba(244, 251, 255, 0.68)";
+  ctx.save();
+  ctx.fillStyle = cloudColor;
+  for (let index = 0; index < 8; index += 1) {
+    const baseX = ((index * viewport.width * 0.23 - speed * (0.24 + index * 0.018)) % (viewport.width + unit * 18)) - unit * 10;
+    const y = viewport.height * (0.08 + (index % 4) * 0.08);
+    drawPixelCloud(ctx, Math.round(baseX / unit) * unit, Math.round(y / unit) * unit, unit);
+  }
+  ctx.restore();
+}
+
+function drawPixelCloud(ctx, x, y, unit) {
+  ctx.fillRect(x, y + unit, unit * 5, unit * 2);
+  ctx.fillRect(x + unit * 2, y, unit * 4, unit * 3);
+  ctx.fillRect(x + unit * 6, y + unit, unit * 4, unit * 2);
 }
 
 function drawSpeedStreaks(ctx, state, viewport, time, tuning) {
@@ -1277,6 +1300,17 @@ function drawRoadSurfaceDetails(ctx, state, viewport, path) {
     const sparkle = Math.sin(station * 0.035) * 0.5 + 0.5;
     ctx.fillStyle = `rgba(172, 221, 235, ${0.018 + sparkle * 0.028})`;
     ctx.fillRect(road.left + road.half * 0.24, y, road.half * 1.52, 1);
+  }
+
+  ctx.globalCompositeOperation = "source-over";
+  const block = Math.max(5, Math.round(viewport.width / 130));
+  for (let y = -block; y < viewport.height + block; y += block * 4) {
+    const station = stationForScreenY(state, viewport, y + ((state.distance * 0.12) % (block * 4)));
+    const road = roadEdgesAt(station, viewport);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.055)";
+    for (let x = road.left + block * 3; x < road.right - block * 3; x += block * 8) {
+      ctx.fillRect(Math.round(x / block) * block, Math.round(y / block) * block, block * 2, block);
+    }
   }
 
   ctx.restore();
@@ -1548,6 +1582,24 @@ function drawFrame(ctx, image, frame, x, y, targetHeight, rotation) {
   ctx.translate(x, y);
   ctx.rotate(rotation);
   ctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, -width * 0.5, -targetHeight * 0.5, width, targetHeight);
+  ctx.restore();
+}
+
+function drawPixelOverlay(ctx, viewport, state) {
+  const cell = Math.max(3, Math.round(Math.min(viewport.width, viewport.height) / 150));
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.08)";
+  for (let y = 0; y < viewport.height; y += cell * 2) {
+    ctx.fillRect(0, y, viewport.width, cell);
+  }
+  if (state.mode === "running" && state.speed > 520) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+    for (let index = 0; index < 18; index += 1) {
+      const y = (state.distance * 0.18 + index * 53) % viewport.height;
+      const x = index % 2 === 0 ? viewport.width * 0.08 : viewport.width * 0.9;
+      ctx.fillRect(Math.round(x / cell) * cell, Math.round(y / cell) * cell, cell * 2, cell * 8);
+    }
+  }
   ctx.restore();
 }
 
