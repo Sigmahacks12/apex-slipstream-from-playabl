@@ -50,6 +50,7 @@ const SKIN_STORAGE = "apexSlipstream.skin.v1";
 const ENVIRONMENT_STORAGE = "apexSlipstream.environment.v1";
 const TUTORIAL_STORAGE = "apexSlipstream.tutorialSeen.v1";
 const LEADERBOARD_STORAGE = "apexSlipstream.leaderboard.v1";
+const PROFILE_STORAGE = "apexSlipstream.profile.v1";
 const ANALYTICS_STORAGE = "apexSlipstream.analytics.v1";
 const CONTROL_ACTIONS = [
   { id: "left", label: "Left" },
@@ -69,7 +70,12 @@ const ENVIRONMENTS = {
 };
 const DEFAULT_SKIN = "apex";
 const DEFAULT_ENVIRONMENT = "neon";
-const PIXEL_RENDER_SCALE = 3;
+const PIXEL_RENDER_SCALE = 2;
+const RUN_MISSIONS = [
+  { id: "distance", label: "Break 1,200 m", reward: { xp: 90, credits: 45 }, complete: (state) => state.score >= 1200 },
+  { id: "close", label: "Score 2 close misses", reward: { xp: 80, credits: 40 }, complete: (state) => state.stats.closeMisses >= 2 },
+  { id: "pickups", label: "Collect 2 powerups", reward: { xp: 70, credits: 35 }, complete: (state) => state.stats.pickups >= 2 },
+];
 
 export function createGame({ mount, sdk, tweaks, assets }) {
   let cleanup = () => {};
@@ -97,6 +103,7 @@ export function createGame({ mount, sdk, tweaks, assets }) {
       state.environment = readEnvironment();
       state.tutorialSeen = readTutorialSeen();
       state.leaderboard = readLocalLeaderboard();
+      state.profile = readProfile();
       trackEvent("loads");
       audio.setMuted(readMuted());
       const controls = createControls(canvas, () => canvas.getBoundingClientRect(), keyBindings.values, () => {
@@ -226,8 +233,9 @@ export function createGame({ mount, sdk, tweaks, assets }) {
 
           if (finished && !resultSubmitted) {
             resultSubmitted = true;
-            finishRun(state, sdk).catch(() => {});
-            hud.showResult(state);
+            finishRun(state, sdk)
+              .catch(() => {})
+              .finally(() => hud.showResult(state));
           }
         }
 
@@ -505,6 +513,96 @@ function saveLocalLeaderboard(rows) {
   }
 }
 
+function createDefaultProfile() {
+  return {
+    version: 1,
+    level: 1,
+    xp: 0,
+    credits: 0,
+    lifetimeDistance: 0,
+    lifetimeRuns: 0,
+    lifetimeCloseMisses: 0,
+    lifetimePickups: 0,
+    lifetimeShieldSmashes: 0,
+  };
+}
+
+function readProfile() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(PROFILE_STORAGE) || "{}");
+    return normalizeProfile(saved);
+  } catch {
+    return createDefaultProfile();
+  }
+}
+
+function saveProfile(profile) {
+  try {
+    window.localStorage.setItem(PROFILE_STORAGE, JSON.stringify(normalizeProfile(profile)));
+  } catch {
+    // Profile progress is local-only and optional.
+  }
+}
+
+function normalizeProfile(profile) {
+  const base = createDefaultProfile();
+  return {
+    ...base,
+    ...profile,
+    level: Math.max(1, Math.floor(Number(profile?.level) || base.level)),
+    xp: Math.max(0, Math.floor(Number(profile?.xp) || 0)),
+    credits: Math.max(0, Math.floor(Number(profile?.credits) || 0)),
+    lifetimeDistance: Math.max(0, Math.floor(Number(profile?.lifetimeDistance) || 0)),
+    lifetimeRuns: Math.max(0, Math.floor(Number(profile?.lifetimeRuns) || 0)),
+    lifetimeCloseMisses: Math.max(0, Math.floor(Number(profile?.lifetimeCloseMisses) || 0)),
+    lifetimePickups: Math.max(0, Math.floor(Number(profile?.lifetimePickups) || 0)),
+    lifetimeShieldSmashes: Math.max(0, Math.floor(Number(profile?.lifetimeShieldSmashes) || 0)),
+  };
+}
+
+function xpForLevel(level) {
+  return 220 + Math.max(0, level - 1) * 90;
+}
+
+function calculateRunRewards(state) {
+  const completed = RUN_MISSIONS.filter((mission) => mission.complete(state));
+  const baseXp = Math.max(20, Math.floor(state.score / 22));
+  const baseCredits = Math.max(8, Math.floor(state.score / 55));
+  const closeXp = state.stats.closeMisses * 12;
+  const pickupCredits = state.stats.pickups * 8;
+  const missionXp = completed.reduce((sum, mission) => sum + mission.reward.xp, 0);
+  const missionCredits = completed.reduce((sum, mission) => sum + mission.reward.credits, 0);
+
+  return {
+    xp: baseXp + closeXp + missionXp,
+    credits: baseCredits + pickupCredits + missionCredits,
+    completedMissions: completed.map((mission) => ({
+      id: mission.id,
+      label: mission.label,
+      xp: mission.reward.xp,
+      credits: mission.reward.credits,
+    })),
+  };
+}
+
+function applyRunRewards(profile, rewards, state) {
+  const next = normalizeProfile(profile);
+  next.xp += rewards.xp;
+  next.credits += rewards.credits;
+  next.lifetimeRuns += 1;
+  next.lifetimeDistance += Math.max(0, Math.floor(state.score));
+  next.lifetimeCloseMisses += state.stats.closeMisses;
+  next.lifetimePickups += state.stats.pickups;
+  next.lifetimeShieldSmashes += state.stats.shieldSmashes;
+
+  while (next.xp >= xpForLevel(next.level)) {
+    next.xp -= xpForLevel(next.level);
+    next.level += 1;
+  }
+
+  return next;
+}
+
 function normalizeLeaderboard(rows) {
   return Array.isArray(rows)
     ? rows
@@ -694,6 +792,8 @@ function createRaceState() {
     score: 0,
     scoreFloat: 0,
     best: 0,
+    profile: createDefaultProfile(),
+    lastRewards: null,
     speed: 0,
     difficulty: DEFAULT_DIFFICULTY,
     skin: DEFAULT_SKIN,
@@ -743,6 +843,7 @@ function resetRace(state, viewport, options = {}) {
   state.distance = 0;
   state.score = 0;
   state.scoreFloat = 0;
+  state.lastRewards = null;
   state.speed = 0;
   state.boost = 0;
   state.draftPulse = 0;
@@ -842,6 +943,10 @@ function updateRace(state, dt, input, tuning, viewport, feedback) {
 async function finishRun(state, sdk) {
   const score = Math.max(0, Math.floor(state.score));
   state.best = Math.max(state.best, score);
+  const rewards = calculateRunRewards(state);
+  state.lastRewards = rewards;
+  state.profile = applyRunRewards(state.profile, rewards, state);
+  saveProfile(state.profile);
   state.leaderboard = normalizeLeaderboard([
     ...state.leaderboard,
     {
@@ -1586,14 +1691,14 @@ function drawFrame(ctx, image, frame, x, y, targetHeight, rotation) {
 }
 
 function drawPixelOverlay(ctx, viewport, state) {
-  const cell = Math.max(3, Math.round(Math.min(viewport.width, viewport.height) / 150));
+  const cell = Math.max(2, Math.round(Math.min(viewport.width, viewport.height) / 190));
   ctx.save();
-  ctx.fillStyle = "rgba(0, 0, 0, 0.08)";
+  ctx.fillStyle = "rgba(0, 0, 0, 0.045)";
   for (let y = 0; y < viewport.height; y += cell * 2) {
     ctx.fillRect(0, y, viewport.width, cell);
   }
   if (state.mode === "running" && state.speed > 520) {
-    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.fillStyle = "rgba(255, 255, 255, 0.052)";
     for (let index = 0; index < 18; index += 1) {
       const y = (state.distance * 0.18 + index * 53) % viewport.height;
       const x = index % 2 === 0 ? viewport.width * 0.08 : viewport.width * 0.9;
@@ -1669,6 +1774,15 @@ function createHud(shell) {
         <strong>How to play</strong>
         <span>Drag, tap arrows, or use keys to dodge traffic. Chain close misses, draft behind cars, and grab powerups.</span>
       </div>
+      <div class="profile-card">
+        <strong>Driver profile</strong>
+        <span class="profile-line">Level 1 · 0 credits · 0 XP</span>
+        <div class="profile-bar" aria-label="Driver XP progress"><span></span></div>
+      </div>
+      <div class="missions-card">
+        <strong>Run missions</strong>
+        <ul></ul>
+      </div>
       <div class="leaderboard-card" hidden>
         <strong>Local leaderboard</strong>
         <ol></ol>
@@ -1700,6 +1814,9 @@ function createHud(shell) {
   const title = overlay.querySelector(".overlay-title");
   const copy = overlay.querySelector(".overlay-copy");
   const tutorialCard = overlay.querySelector(".tutorial-card");
+  const profileLine = overlay.querySelector(".profile-line");
+  const profileBar = overlay.querySelector(".profile-bar span");
+  const missionsList = overlay.querySelector(".missions-card ul");
   const leaderboardCard = overlay.querySelector(".leaderboard-card");
   const leaderboardList = overlay.querySelector(".leaderboard-card ol");
   const startHandlers = new Set();
@@ -1910,15 +2027,17 @@ function createHud(shell) {
       copy.textContent = `${state.score} m · resume when ready`;
       playButton.textContent = "Resume";
       tutorialCard.hidden = true;
+      refreshProfile(state);
       refreshLeaderboard(state.leaderboard);
     },
     showResult(state) {
       overlay.hidden = false;
       overlay.dataset.mode = "start";
       title.textContent = state.crashReason === "Wall" ? "Ran out of track" : "Wheel-to-wheel hit";
-      copy.textContent = `${state.score} m · ${formatRunStats(state)} · tap retry`;
+      copy.textContent = `${state.score} m · ${formatRunStats(state)}${formatRunRewards(state)} · tap retry`;
       playButton.textContent = "Retry";
       tutorialCard.hidden = true;
+      refreshProfile(state);
       refreshLeaderboard(state.leaderboard);
     },
     update(state) {
@@ -1940,7 +2059,10 @@ function createHud(shell) {
       if (!overlay.hidden && overlay.dataset.mode === "start") {
         playButton.textContent = state.score > 0 ? "Retry" : "Play";
         tutorialCard.hidden = state.tutorialSeen;
+        refreshProfile(state);
         refreshLeaderboard(state.leaderboard);
+      } else if (!overlay.hidden && overlay.dataset.mode === "paused") {
+        refreshProfile(state);
       }
     },
     dispose() {
@@ -1974,12 +2096,37 @@ function createHud(shell) {
       <li><span>${row.score} m</span><small>${DIFFICULTIES[row.difficulty].label} · ${row.closeMisses} misses</small></li>
     `).join("");
   }
+
+  function refreshProfile(state) {
+    const profile = normalizeProfile(state.profile);
+    const needed = xpForLevel(profile.level);
+    const progress = clamp(profile.xp / needed, 0.03, 1);
+    profileLine.textContent = `Level ${profile.level} · ${profile.credits} credits · ${profile.xp}/${needed} XP`;
+    profileBar.style.transform = `scaleX(${progress})`;
+    missionsList.innerHTML = RUN_MISSIONS.map((mission) => {
+      const complete = state.lastRewards?.completedMissions?.some((item) => item.id === mission.id);
+      return `
+        <li class="${complete ? "is-complete" : ""}">
+          <span>${mission.label}</span>
+          <b>+${mission.reward.xp} XP / +${mission.reward.credits} cr</b>
+        </li>
+      `;
+    }).join("");
+  }
 }
 
 function formatRunStats(state) {
   const seconds = Math.max(1, Math.round(state.stats.runTime));
   const topSpeed = Math.round(state.stats.topSpeed);
   return `best ${state.best} m · ${state.stats.closeMisses} near misses · ${state.stats.pickups} pickups · ${topSpeed} top speed · ${seconds}s`;
+}
+
+function formatRunRewards(state) {
+  if (!state.lastRewards) return "";
+  const missionText = state.lastRewards.completedMissions.length > 0
+    ? ` · ${state.lastRewards.completedMissions.length} missions`
+    : "";
+  return ` · +${state.lastRewards.xp} XP · +${state.lastRewards.credits} credits${missionText}`;
 }
 
 function formatKey(code) {
