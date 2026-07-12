@@ -26,11 +26,14 @@ const DEFAULT_TWEAKS = {
 
 const LANES = [-0.72, 0, 0.72];
 const RIVAL_VARIANTS = ["red_car", "yellow_car", "green_car", "white_car"];
-const POWERUP_TYPES = ["invincible", "doubleScore", "speedBoost"];
+const POWERUP_TYPES = ["invincible", "doubleScore", "speedBoost", "magnet", "slowMo", "shockwave"];
 const POWERUP_META = {
   invincible: { label: "Shield", short: "SHD", color: "#6ef7ff", duration: 10 },
   doubleScore: { label: "2x Score", short: "2X", color: "#ffe66d", duration: 10 },
   speedBoost: { label: "Boost", short: "BST", color: "#ff5f7d", duration: 8 },
+  magnet: { label: "Magnet", short: "MAG", color: "#b794ff", duration: 10 },
+  slowMo: { label: "Slow-Mo", short: "SLO", color: "#67e8f9", duration: 7 },
+  shockwave: { label: "Pulse", short: "PUL", color: "#fb7185", duration: 0 },
 };
 const DIFFICULTIES = {
   rookie: { label: "Rookie", speed: 0.9, traffic: 0.78, score: 0.9 },
@@ -823,6 +826,8 @@ function createRaceState() {
       invincible: 0,
       doubleScore: 0,
       speedBoost: 0,
+      magnet: 0,
+      slowMo: 0,
     },
     player: {
       x: 0,
@@ -865,6 +870,8 @@ function resetRace(state, viewport, options = {}) {
   state.activePowerups.invincible = 0;
   state.activePowerups.doubleScore = 0;
   state.activePowerups.speedBoost = 0;
+  state.activePowerups.magnet = 0;
+  state.activePowerups.slowMo = 0;
   state.player.y = viewport.height * 0.78;
   state.player.x = getTrackCenter(0, viewport);
   state.player.targetX = state.player.x;
@@ -1030,7 +1037,8 @@ function spawnPowerups(state, viewport, tuning) {
 
 function updateRivals(state, viewport, dt, tuning) {
   for (const rival of state.rivals) {
-    const speedTarget = state.speed * clamp(rival.pace * tuning.trafficSpeed * 1.8, 0.24, 0.72);
+    const slowMoFactor = state.activePowerups.slowMo > 0 ? 0.42 : 1;
+    const speedTarget = state.speed * clamp(rival.pace * tuning.trafficSpeed * 1.8, 0.24, 0.72) * slowMoFactor;
     rival.speed += (speedTarget - rival.speed) * (1 - Math.exp(-2.6 * dt));
     rival.station += rival.speed * dt;
 
@@ -1053,22 +1061,59 @@ function updatePowerupTimers(state, dt) {
 function updatePowerups(state, viewport) {
   const carH = getPlayerHeight(viewport);
   const pickupRadius = Math.max(34, carH * 0.34);
+  const magnetRadius = state.activePowerups.magnet > 0 ? Math.max(130, carH * 1.35) : pickupRadius;
   for (const powerup of state.powerups) {
     const y = screenYForStation(state, powerup.station);
+    if (state.activePowerups.magnet > 0 && Math.abs(y - state.player.y) < magnetRadius * 1.65) {
+      const road = roadEdgesAt(powerup.station, viewport);
+      const targetLane = clamp((state.player.x - road.center) / Math.max(1, road.half * 0.66), -0.9, 0.9);
+      powerup.lane += (targetLane - powerup.lane) * 0.18;
+    }
     const x = laneX(powerup.station, powerup.lane, viewport);
-    const touching = Math.abs(y - state.player.y) < pickupRadius && Math.abs(x - state.player.x) < pickupRadius;
+    const radius = state.activePowerups.magnet > 0 ? magnetRadius : pickupRadius;
+    const touching = Math.abs(y - state.player.y) < radius && Math.abs(x - state.player.x) < radius;
     if (!touching) continue;
     const meta = POWERUP_META[powerup.type];
-    state.activePowerups[powerup.type] = meta.duration;
+    if (powerup.type === "shockwave") {
+      triggerShockwave(state);
+    } else {
+      state.activePowerups[powerup.type] = meta.duration;
+    }
     powerup.collected = true;
     state.stats.pickups += 1;
     awardBonus(state, 90, meta.label);
-    addBurst(state, x, y, powerup.type === "doubleScore" ? "gold" : "cyan", 16);
+    addBurst(state, x, y, burstColorForPowerup(powerup.type), powerup.type === "shockwave" ? 30 : 16);
   }
   state.powerups = state.powerups.filter((powerup) => {
     if (powerup.collected) return false;
     return screenYForStation(state, powerup.station) < viewport.height + 140;
   });
+}
+
+function triggerShockwave(state) {
+  const affected = [];
+  for (const rival of state.rivals) {
+    const y = screenYForStation(state, rival.station);
+    if (y < -40 || y > state.player.y + 40) continue;
+    affected.push(rival);
+  }
+  if (affected.length === 0) {
+    state.shake = Math.max(state.shake, 4);
+    addBurst(state, state.player.x, state.player.y - 36, "pink", 18);
+    return;
+  }
+  for (const rival of affected) rival.destroyed = true;
+  state.rivals = state.rivals.filter((rival) => !rival.destroyed);
+  state.shake = Math.max(state.shake, 9);
+  awardBonus(state, affected.length * 140, "Pulse clear");
+  addBurst(state, state.player.x, state.player.y - 48, "pink", 28 + affected.length * 4);
+}
+
+function burstColorForPowerup(type) {
+  if (type === "doubleScore") return "gold";
+  if (type === "shockwave") return "pink";
+  if (type === "magnet") return "purple";
+  return "cyan";
 }
 
 function updateCloseMisses(state, viewport) {
@@ -1629,6 +1674,31 @@ function drawPlayer(ctx, state, gameAssets, viewport, time) {
     ctx.restore();
   }
 
+  if (state.activePowerups.magnet > 0) {
+    const pulse = 0.32 + Math.sin(time * 7) * 0.08;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.strokeStyle = `rgba(183, 148, 255, ${pulse})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 7]);
+    ctx.beginPath();
+    ctx.ellipse(state.player.x, state.player.y, carW * 1.32, carH * 1.06, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (state.activePowerups.slowMo > 0) {
+    const pulse = 0.28 + Math.sin(time * 5) * 0.07;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.strokeStyle = `rgba(103, 232, 249, ${pulse})`;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.ellipse(state.player.x, state.player.y, carW * 0.92, carH * 0.8, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   ctx.save();
   ctx.translate(state.player.x, state.player.y);
   ctx.rotate(state.player.angle + Math.sin(time * 18) * state.player.scrape * 0.025);
@@ -1654,7 +1724,11 @@ function drawParticles(ctx, state, tuning) {
       ? `rgba(86, 245, 255, ${alpha})`
       : particle.color === "gold"
         ? `rgba(255, 230, 109, ${alpha})`
-        : `rgba(255, 125, 60, ${alpha})`;
+        : particle.color === "pink"
+          ? `rgba(251, 113, 133, ${alpha})`
+          : particle.color === "purple"
+            ? `rgba(183, 148, 255, ${alpha})`
+            : `rgba(255, 125, 60, ${alpha})`;
     ctx.beginPath();
     ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
     ctx.fill();
@@ -1772,7 +1846,7 @@ function createHud(shell) {
       </div>
       <div class="tutorial-card" hidden>
         <strong>How to play</strong>
-        <span>Drag, tap arrows, or use keys to dodge traffic. Chain close misses, draft behind cars, and grab powerups.</span>
+        <span>Drag, tap arrows, or use keys to dodge traffic. Chain close misses, draft behind cars, and grab Shield, Boost, Magnet, Slow-Mo, Pulse, or 2x Score pickups.</span>
       </div>
       <div class="profile-card">
         <strong>Driver profile</strong>
